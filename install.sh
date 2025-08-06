@@ -6969,15 +6969,335 @@ handleFirewall() {
 bbrInstall() {
     echoContent red "\n=============================================================="
     echoContent green "BBR、DD脚本用的[ylx2016]的成熟作品，地址[https://github.com/ylx2016/Linux-NetSpeed]，请熟知"
-    echoContent yellow "1.安装脚本【推荐原版BBR+FQ】"
-    echoContent yellow "2.回退主目录"
-    echoContent red "=============================================================="
-    read -r -p "请选择:" installBBRStatus
-    if [[ "${installBBRStatus}" == "1" ]]; then
-        wget -N --no-check-certificate "https://raw.githubusercontent.com/ylx2016/Linux-NetSpeed/master/tcp.sh" && chmod +x tcp.sh && ./tcp.sh
+    
+    if [[ "${release}" == "alpine" ]]; then
+        echoContent yellow "检测到Alpine Linux系统"
+        echoContent yellow "1.安装Alpine专用BBR优化【推荐】"
+        echoContent yellow "2.尝试安装通用BBR脚本（可能不兼容）"
+        echoContent yellow "3.安装Alpine专用DD脚本【系统重装】"
+        echoContent yellow "4.回退主目录"
+        echoContent red "=============================================================="
+        read -r -p "请选择:" installBBRStatus
+        if [[ "${installBBRStatus}" == "1" ]]; then
+            installAlpineBBR
+        elif [[ "${installBBRStatus}" == "2" ]]; then
+            echoContent yellow "尝试安装通用BBR脚本..."
+            wget -N --no-check-certificate "https://raw.githubusercontent.com/ylx2016/Linux-NetSpeed/master/tcp.sh" && chmod +x tcp.sh && ./tcp.sh
+        elif [[ "${installBBRStatus}" == "3" ]]; then
+            installAlpineDD
+        else
+            menu
+        fi
     else
-        menu
+        echoContent yellow "1.安装脚本【推荐原版BBR+FQ】"
+        echoContent yellow "2.回退主目录"
+        echoContent red "=============================================================="
+        read -r -p "请选择:" installBBRStatus
+        if [[ "${installBBRStatus}" == "1" ]]; then
+            wget -N --no-check-certificate "https://raw.githubusercontent.com/ylx2016/Linux-NetSpeed/master/tcp.sh" && chmod +x tcp.sh && ./tcp.sh
+        else
+            menu
+        fi
     fi
+}
+
+# Alpine Linux专用BBR安装
+installAlpineBBR() {
+    echoContent green "开始安装Alpine Linux专用BBR优化..."
+    
+    # 检查是否为root用户
+    if [[ $EUID -ne 0 ]]; then
+        echoContent red "请使用root用户运行此脚本"
+        exit 1
+    fi
+    
+    # 检查Alpine版本
+    if [[ -n "${alpineVersion}" ]]; then
+        echoContent green "检测到Alpine ${alpineVersion}"
+    fi
+    
+    # 安装必要的包
+    echoContent green "安装必要的系统包..."
+    apk update
+    apk add --no-cache linux-firmware linux-headers build-base
+    
+    # 检查当前内核版本
+    local currentKernel=$(uname -r)
+    echoContent green "当前内核版本: ${currentKernel}"
+    
+    # 检查是否已经启用了BBR
+    local bbrEnabled=$(sysctl net.ipv4.tcp_congestion_control 2>/dev/null | grep -o bbr)
+    if [[ -n "${bbrEnabled}" ]]; then
+        echoContent green "BBR已经启用，当前拥塞控制算法: $(sysctl net.ipv4.tcp_congestion_control | cut -d'=' -f2 | tr -d ' ')"
+    else
+        echoContent yellow "BBR未启用，当前拥塞控制算法: $(sysctl net.ipv4.tcp_congestion_control | cut -d'=' -f2 | tr -d ' ')"
+    fi
+    
+    # 检查是否支持BBR
+    local bbrSupport=$(sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -o bbr)
+    if [[ -n "${bbrSupport}" ]]; then
+        echoContent green "内核支持BBR，可以直接启用"
+        enableAlpineBBR
+    else
+        echoContent yellow "当前内核不支持BBR，需要升级内核"
+        upgradeAlpineKernel
+    fi
+}
+
+# 启用Alpine BBR
+enableAlpineBBR() {
+    echoContent green "启用BBR优化..."
+    
+    # 备份当前sysctl配置
+    if [[ ! -f "/etc/sysctl.conf.backup" ]]; then
+        cp /etc/sysctl.conf /etc/sysctl.conf.backup 2>/dev/null || true
+    fi
+    
+    # 创建BBR优化配置
+    cat > /etc/sysctl.d/99-bbr.conf << EOF
+# BBR优化配置
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+
+# 网络优化参数
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+net.ipv4.tcp_rmem = 4096 87380 16777216
+net.ipv4.tcp_wmem = 4096 65536 16777216
+net.ipv4.tcp_collapse = 0
+net.ipv4.tcp_notsent_lowat = 131072
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_slow_start_after_idle = 0
+net.ipv4.tcp_tw_reuse = 1
+net.ipv4.ip_local_port_range = 1024 65535
+net.core.netdev_max_backlog = 5000
+net.ipv4.tcp_max_syn_backlog = 8192
+net.ipv4.tcp_max_tw_buckets = 2000000
+net.ipv4.tcp_fin_timeout = 15
+net.ipv4.tcp_keepalive_time = 1200
+net.ipv4.tcp_keepalive_intvl = 15
+net.ipv4.tcp_keepalive_probes = 5
+net.ipv4.tcp_mtu_probing = 1
+net.core.optmem_max = 65536
+net.ipv4.tcp_fack = 1
+net.ipv4.tcp_sack = 1
+net.ipv4.tcp_window_scaling = 1
+net.ipv4.tcp_timestamps = 1
+net.ipv4.tcp_ecn = 1
+net.ipv4.tcp_syn_retries = 2
+net.ipv4.tcp_synack_retries = 2
+net.ipv4.tcp_retries2 = 3
+net.ipv4.tcp_orphan_retries = 3
+net.ipv4.tcp_retrans_collapse = 0
+net.ipv4.tcp_abort_on_overflow = 0
+net.ipv4.tcp_stdurg = 0
+net.ipv4.tcp_rfc1337 = 0
+net.ipv4.tcp_max_orphans = 3276800
+net.ipv4.tcp_no_metrics_save = 1
+net.ipv4.tcp_moderate_rcvbuf = 1
+net.ipv4.tcp_tso_win_divisor = 3
+net.ipv4.tcp_congestion_control = bbr
+net.ipv4.tcp_available_congestion_control = bbr
+net.core.default_qdisc = fq
+EOF
+    
+    # 应用配置
+    sysctl -p /etc/sysctl.d/99-bbr.conf
+    
+    # 验证BBR是否启用
+    local bbrStatus=$(sysctl net.ipv4.tcp_congestion_control 2>/dev/null | grep -o bbr)
+    if [[ -n "${bbrStatus}" ]]; then
+        echoContent green "BBR启用成功！"
+        echoContent green "当前拥塞控制算法: $(sysctl net.ipv4.tcp_congestion_control | cut -d'=' -f2 | tr -d ' ')"
+        echoContent green "当前队列调度器: $(sysctl net.core.default_qdisc | cut -d'=' -f2 | tr -d ' ')"
+    else
+        echoContent red "BBR启用失败，请检查内核是否支持BBR"
+    fi
+    
+    # 显示优化建议
+    echoContent yellow "\n优化建议："
+    echoContent yellow "1. 重启系统以确保所有配置生效"
+    echoContent yellow "2. 使用 'sysctl net.ipv4.tcp_congestion_control' 检查BBR状态"
+    echoContent yellow "3. 使用 'ss -i' 查看连接详情"
+}
+
+# 升级Alpine内核以支持BBR
+upgradeAlpineKernel() {
+    echoContent yellow "当前内核不支持BBR，需要升级内核..."
+    echoContent yellow "注意：内核升级可能需要重启系统"
+    
+    read -r -p "是否继续升级内核？[y/N]: " upgradeKernel
+    if [[ "${upgradeKernel}" != "y" && "${upgradeKernel}" != "Y" ]]; then
+        echoContent yellow "取消内核升级"
+        return
+    fi
+    
+    echoContent green "开始升级Alpine内核..."
+    
+    # 更新包索引
+    apk update
+    
+    # 安装最新内核
+    if [[ -n "${alpineVersion}" ]] && [[ "${alpineVersion}" == "3.20" ]] || [[ "${alpineVersion}" > "3.20" ]]; then
+        echoContent green "安装Alpine ${alpineVersion} 最新内核..."
+        apk add --no-cache linux-lts linux-lts-headers
+    else
+        echoContent green "安装最新稳定内核..."
+        apk add --no-cache linux-virt linux-virt-headers
+    fi
+    
+    # 检查内核是否安装成功
+    local newKernel=$(ls /boot/vmlinuz-* 2>/dev/null | grep -v rescue | tail -1 | xargs basename 2>/dev/null)
+    if [[ -n "${newKernel}" ]]; then
+        echoContent green "新内核安装成功: ${newKernel}"
+        echoContent yellow "请重启系统以使用新内核，然后重新运行BBR安装脚本"
+        
+        read -r -p "是否现在重启系统？[y/N]: " rebootNow
+        if [[ "${rebootNow}" == "y" || "${rebootNow}" == "Y" ]]; then
+            echoContent green "系统将在5秒后重启..."
+            sleep 5
+            reboot
+        fi
+    else
+                 echoContent red "内核安装失败，请手动安装支持BBR的内核"
+     fi
+ }
+
+# Alpine Linux专用DD脚本
+installAlpineDD() {
+    echoContent red "\n=============================================================="
+    echoContent yellow "Alpine Linux系统重装脚本"
+    echoContent red "警告：此操作将完全重装系统，所有数据将丢失！"
+    echoContent red "请确保已备份重要数据！"
+    echoContent red "=============================================================="
+    
+    read -r -p "确认要继续系统重装吗？[y/N]: " confirmDD
+    if [[ "${confirmDD}" != "y" && "${confirmDD}" != "Y" ]]; then
+        echoContent yellow "取消系统重装"
+        return
+    fi
+    
+    echoContent yellow "选择重装系统类型："
+    echoContent yellow "1. Alpine Linux 3.20 (最新稳定版)"
+    echoContent yellow "2. Alpine Linux 3.19"
+    echoContent yellow "3. Alpine Linux 3.18"
+    echoContent yellow "4. 使用通用DD脚本（可能不兼容）"
+    echoContent yellow "5. 取消"
+    
+    read -r -p "请选择系统版本 [1-5]: " alpineVersionChoice
+    
+    case ${alpineVersionChoice} in
+        1)
+            echoContent green "准备重装为 Alpine Linux 3.20..."
+            installAlpineSystem "3.20"
+            ;;
+        2)
+            echoContent green "准备重装为 Alpine Linux 3.19..."
+            installAlpineSystem "3.19"
+            ;;
+        3)
+            echoContent green "准备重装为 Alpine Linux 3.18..."
+            installAlpineSystem "3.18"
+            ;;
+        4)
+            echoContent yellow "使用通用DD脚本..."
+            echoContent yellow "注意：通用DD脚本可能不完全兼容Alpine Linux"
+            bash <(wget -qO- https://github.com/fcurrk/reinstall/raw/master/NewReinstall.sh)
+            ;;
+        5)
+            echoContent yellow "取消系统重装"
+            return
+            ;;
+        *)
+            echoContent red "无效选择，取消操作"
+            return
+            ;;
+    esac
+}
+
+# 安装Alpine系统
+installAlpineSystem() {
+    local targetVersion=$1
+    echoContent green "开始重装 Alpine Linux ${targetVersion}..."
+    
+    # 检查网络连接
+    if ! ping -c 1 8.8.8.8 >/dev/null 2>&1; then
+        echoContent red "网络连接失败，请检查网络设置"
+        return 1
+    fi
+    
+    # 下载Alpine安装脚本
+    echoContent green "下载Alpine安装脚本..."
+    local installScript="/tmp/alpine-install.sh"
+    
+    # 创建Alpine安装脚本
+    cat > "${installScript}" << EOF
+#!/bin/sh
+# Alpine Linux 自动安装脚本
+
+# 设置安装参数
+export ALPINE_VERSION="${targetVersion}"
+export ALPINE_MIRROR="http://dl-cdn.alpinelinux.org/alpine"
+export ALPINE_ARCH="x86_64"
+export ALPINE_VARIANT="virt"
+
+# 下载Alpine ISO
+echo "下载Alpine Linux \${ALPINE_VERSION} ISO..."
+wget -O /tmp/alpine.iso "\${ALPINE_MIRROR}/v\${ALPINE_VERSION}/releases/\${ALPINE_ARCH}/alpine-\${ALPINE_VARIANT}-\${ALPINE_VERSION}-\${ALPINE_ARCH}.iso"
+
+# 验证下载
+if [ ! -f "/tmp/alpine.iso" ]; then
+    echo "ISO下载失败"
+    exit 1
+fi
+
+# 准备安装
+echo "准备安装Alpine Linux \${ALPINE_VERSION}..."
+echo "注意：此操作将完全重写磁盘，所有数据将丢失！"
+
+# 这里需要根据具体的VPS提供商使用相应的DD命令
+# 由于不同VPS提供商的重装方式不同，这里提供通用指导
+
+echo "请根据您的VPS提供商选择相应的重装方式："
+echo "1. 如果您的VPS支持Alpine Linux，请在控制面板中选择Alpine \${ALPINE_VERSION}"
+echo "2. 如果支持自定义ISO，请上传下载的ISO文件"
+echo "3. 如果支持DD重装，请使用以下命令："
+echo "   dd if=/tmp/alpine.iso of=/dev/sda bs=4M status=progress"
+
+echo "安装完成后，请重新运行v2ray-agent安装脚本"
+EOF
+    
+    chmod +x "${installScript}"
+    
+    echoContent green "Alpine安装脚本已准备就绪"
+    echoContent yellow "由于不同VPS提供商的重装方式不同，请根据以下指导进行操作："
+    echoContent yellow ""
+    echoContent yellow "1. 如果您的VPS控制面板支持Alpine Linux："
+    echoContent yellow "   - 在控制面板中选择重装系统"
+    echoContent yellow "   - 选择Alpine Linux ${targetVersion}"
+    echoContent yellow "   - 确认重装"
+    echoContent yellow ""
+    echoContent yellow "2. 如果支持自定义ISO："
+    echoContent yellow "   - 下载Alpine Linux ${targetVersion} ISO"
+    echoContent yellow "   - 在控制面板中上传ISO文件"
+    echoContent yellow "   - 选择从ISO启动并安装"
+    echoContent yellow ""
+    echoContent yellow "3. 如果支持DD重装："
+    echoContent yellow "   - 使用通用DD脚本：bash <(wget -qO- https://github.com/fcurrk/reinstall/raw/master/NewReinstall.sh)"
+    echoContent yellow "   - 在DD脚本中选择Alpine Linux或最小化系统"
+    echoContent yellow ""
+    echoContent yellow "4. 手动DD命令（高级用户）："
+    echoContent yellow "   - 下载Alpine ISO: wget -O alpine.iso http://dl-cdn.alpinelinux.org/alpine/v${targetVersion}/releases/x86_64/alpine-virt-${targetVersion}-x86_64.iso"
+    echoContent yellow "   - DD到磁盘: dd if=alpine.iso of=/dev/sda bs=4M status=progress"
+    echoContent yellow ""
+    echoContent yellow "重装完成后，请重新运行v2ray-agent安装脚本"
+    
+    # 提供快速下载链接
+    echoContent green "\n快速下载链接："
+    echoContent green "Alpine Linux ${targetVersion} ISO: http://dl-cdn.alpinelinux.org/alpine/v${targetVersion}/releases/x86_64/alpine-virt-${targetVersion}-x86_64.iso"
+    
+    # 清理临时文件
+    rm -f "${installScript}"
 }
 
 # 查看、检查日志

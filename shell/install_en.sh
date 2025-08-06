@@ -41,6 +41,48 @@ checkCentosSELinux() {
         exit 0
     fi
 }
+
+# Check Alpine AppArmor status
+checkAlpineAppArmor() {
+    if [[ "${release}" == "alpine" ]]; then
+        # Check if AppArmor is installed
+        if command -v aa-status >/dev/null 2>&1; then
+            # Check AppArmor status
+            if aa-status --enabled >/dev/null 2>&1; then
+                echoContent green " ---> AppArmor is enabled, this is Alpine's recommended security module"
+            else
+                echoContent yellow " ---> AppArmor is installed but not enabled"
+                echoContent yellow " ---> It is recommended to enable AppArmor to enhance security"
+            fi
+        else
+            echoContent yellow " ---> AppArmor is not installed, will be automatically installed during installation"
+        fi
+    fi
+}
+
+# Check Alpine sudo configuration
+checkAlpineSudo() {
+    if [[ "${release}" == "alpine" ]]; then
+        # Check if sudo is installed
+        if ! command -v sudo >/dev/null 2>&1; then
+            echoContent yellow " ---> sudo is not installed, will be automatically installed and configured during dependency installation"
+            return
+        fi
+        
+        # Check if wheel group exists
+        if ! grep -q "^wheel:" /etc/group; then
+            echoContent yellow " ---> wheel group does not exist, need to create and configure sudo permissions"
+        fi
+        
+        # Check sudoers configuration
+        if [[ -f "/etc/sudoers" ]] && ! grep -q "^%wheel.*ALL" /etc/sudoers; then
+            echoContent yellow " ---> sudoers configuration needs to be updated to support wheel group"
+        fi
+        
+        echoContent green " ---> Alpine sudo check completed"
+    fi
+}
+
 checkSystem() {
     if [[ -n $(find /etc -name "redhat-release") ]] || grep </proc/version -q -i "centos"; then
         mkdir -p /etc/yum.repos.d
@@ -58,6 +100,32 @@ checkSystem() {
         removeType='yum -y remove'
         upgrade="yum update -y --skip-broken"
         checkCentosSELinux
+    elif { [[ -f "/etc/issue" ]] && grep -qi "Alpine" /etc/issue; } || { [[ -f "/proc/version" ]] && grep -qi "Alpine" /proc/version; } || { [[ -f "/etc/os-release" ]] && grep -qi "ID=alpine" /etc/os-release; }; then
+        release="alpine"
+        installType='apk add'
+        upgrade="apk update && apk upgrade"
+        removeType='apk del'
+        nginxConfigPath=/etc/nginx/http.d/
+        
+        # Detect Alpine version
+        if [[ -f "/etc/os-release" ]]; then
+            alpineVersion=$(grep "VERSION_ID" /etc/os-release | cut -d'=' -f2 | tr -d '"' | cut -d'.' -f1,2)
+        elif [[ -f "/etc/alpine-release" ]]; then
+            alpineVersion=$(cat /etc/alpine-release | cut -d'.' -f1,2)
+        fi
+        
+        # Alpine 3.20 special handling
+        if [[ "${alpineVersion}" == "3.20" ]] || [[ "${alpineVersion}" > "3.20" ]]; then
+            echoContent green " ---> Detected Alpine ${alpineVersion}, enabling enhanced compatibility mode"
+            # Ensure using latest apk package index
+            upgrade="apk update --no-cache && apk upgrade --available"
+        fi
+        
+        # Check AppArmor status
+        checkAlpineAppArmor
+        
+        # Check sudo configuration
+        checkAlpineSudo
     elif [[ -f "/etc/issue" ]] && grep </etc/issue -q -i "debian" || [[ -f "/proc/version" ]] && grep </etc/issue -q -i "debian" || [[ -f "/etc/os-release" ]] && grep </etc/os-release -q -i "ID=debian"; then
         release="debian"
         installType='apt -y install'
@@ -287,6 +355,19 @@ initVar() {
     publicKeyWarpReg=
     addressWarpReg=
     secretKeyWarpReg=
+
+    # Alpine 3.20 compatibility check
+    if [[ "${release}" == "alpine" && -n "${alpineVersion}" ]]; then
+        if [[ "${alpineVersion}" == "3.20" ]] || [[ "${alpineVersion}" > "3.20" ]]; then
+            echoContent green " ---> Alpine ${alpineVersion} compatibility check completed"
+            # Ensure necessary directories exist
+            mkdir -p /var/run >/dev/null 2>&1
+            # Check OpenRC service manager
+            if ! command -v rc-service >/dev/null 2>&1; then
+                echoContent yellow " ---> Warning: Alpine ${alpineVersion} requires OpenRC service manager"
+            fi
+        fi
+    fi
 }
 
 # Read tls certificate details
@@ -476,6 +557,13 @@ allowPort() {
                 checkUFWAllowPort "$1"
             fi
         fi
+    elif rc-update show 2>/dev/null | grep -q ufw; then
+        if ufw status | grep -q "Status: active"; then
+            if ! ufw status | grep -q "$1/${type}"; then
+                sudo ufw allow "$1/${type}"
+                checkUFWAllowPort "$1"
+            fi
+        fi
 
     elif systemctl status firewalld 2>/dev/null | grep -q "active (running)"; then
         local updateFirewalldStatus=
@@ -493,6 +581,29 @@ allowPort() {
 
         if echo "${updateFirewalldStatus}" | grep -q "true"; then
             firewall-cmd --reload
+        fi
+    elif [[ "${release}" == "alpine" ]]; then
+        # Alpine Linux uses native iptables
+        local updateFirewalldStatus=
+        if ! iptables -L | grep -q "$1/${type}(mack-a)"; then
+            updateFirewalldStatus=true
+            iptables -I INPUT -p ${type} --dport "$1" -m comment --comment "allow $1/${type}(mack-a)" -j ACCEPT
+            if [[ "${type}" == "tcp" ]]; then
+                ip6tables -I INPUT -p tcp --dport "$1" -m comment --comment "allow $1/${type}(mack-a)" -j ACCEPT 2>/dev/null || true
+            elif [[ "${type}" == "udp" ]]; then
+                ip6tables -I INPUT -p udp --dport "$1" -m comment --comment "allow $1/${type}(mack-a)" -j ACCEPT 2>/dev/null || true
+            fi
+        fi
+
+        if echo "${updateFirewalldStatus}" | grep -q "true"; then
+            # Save iptables rules (Alpine way)
+            if rc-service iptables status >/dev/null 2>&1; then
+                /etc/init.d/iptables save >/dev/null 2>&1 || true
+            fi
+            if rc-service ip6tables status >/dev/null 2>&1; then
+                /etc/init.d/ip6tables save >/dev/null 2>&1 || true
+            fi
+            echoContent green " ---> Port $1/${type} opened successfully (Alpine)"
         fi
     fi
 }
@@ -823,6 +934,8 @@ installTools() {
         echoContent green " ---> install crontabs"
         if [[ "${release}" == "ubuntu" ]] || [[ "${release}" == "debian" ]]; then
             ${installType} cron >/dev/null 2>&1
+        elif [[ "${release}" == "alpine" ]]; then
+            ${installType} dcron >/dev/null 2>&1
         else
             ${installType} crontabs >/dev/null 2>&1
         fi
@@ -839,7 +952,11 @@ installTools() {
 
     if ! find /usr/bin /usr/sbin | grep -q -w ping6; then
         echoContent green " ---> Install ping6"
-        ${installType} inetutils-ping >/dev/null 2>&1
+        if [[ "${release}" == "alpine" ]]; then
+            ${installType} iputils >/dev/null 2>&1
+        else
+            ${installType} inetutils-ping >/dev/null 2>&1
+        fi
     fi
 
     if ! find /usr/bin /usr/sbin | grep -q -w qrencode; then
@@ -850,11 +967,42 @@ installTools() {
     if ! find /usr/bin /usr/sbin | grep -q -w sudo; then
         echoContent green " ---> install sudo"
         ${installType} sudo >/dev/null 2>&1
+        
+        # Alpine Linux sudo configuration
+        if [[ "${release}" == "alpine" ]]; then
+            echoContent green " ---> Configure sudo permissions (Alpine)"
+            # Ensure wheel group exists
+            if ! grep -q "^wheel:" /etc/group; then
+                addgroup wheel >/dev/null 2>&1
+            fi
+            
+            # Configure sudoers file to allow wheel group users to use sudo
+            if [[ -f "/etc/sudoers" ]] && ! grep -q "^%wheel ALL=(ALL) ALL" /etc/sudoers; then
+                echo "%wheel ALL=(ALL) ALL" >> /etc/sudoers
+            fi
+            
+            # Ensure current user is in wheel group
+            if [[ -n "${USER}" ]] && [[ "${USER}" != "root" ]]; then
+                adduser "${USER}" wheel >/dev/null 2>&1
+            fi
+            
+            # Verify sudo installation and configuration
+            if command -v sudo >/dev/null 2>&1; then
+                echoContent green " ---> sudo installation and configuration completed"
+            else
+                echoContent red " ---> sudo installation failed, please check manually"
+            fi
+        fi
     fi
 
     if ! find /usr/bin /usr/sbin | grep -q -w lsb-release; then
         echoContent green " ---> install lsb-release"
-        ${installType} lsb-release >/dev/null 2>&1
+        if [[ "${release}" == "alpine" ]]; then
+            # Alpine has different package name for lsb-release, or use alternative
+            ${installType} lsb-release-minimal >/dev/null 2>&1 || ${installType} alpine-release >/dev/null 2>&1
+        else
+            ${installType} lsb-release >/dev/null 2>&1
+        fi
     fi
 
     if ! find /usr/bin /usr/sbin | grep -q -w lsof; then
@@ -868,11 +1016,33 @@ installTools() {
             ${installType} dnsutils >/dev/null 2>&1
         elif echo "${installType} " | grep -q -w "yum"; then
             ${installType} bind-utils >/dev/null 2>&1
+        elif echo "${installType}" | grep -qw "apk"; then
+            ${installType} bind-tools >/dev/null 2>&1
+        fi
+    fi
+
+    # Alpine 3.20 special package handling
+    if [[ "${release}" == "alpine" ]]; then
+        # Ensure ca-certificates is up to date
+        if [[ -n "${alpineVersion}" ]] && [[ "${alpineVersion}" == "3.20" ]] || [[ "${alpineVersion}" > "3.20" ]]; then
+            echoContent green " ---> Alpine ${alpineVersion} special package handling"
+            ${installType} ca-certificates-bundle >/dev/null 2>&1
+            # Update apk cache to ensure package index is latest
+            apk update --no-cache >/dev/null 2>&1
+        fi
+        
+        # Ensure basic tool packages are available
+        if ! find /usr/bin /usr/sbin | grep -q -w bash; then
+            ${installType} bash >/dev/null 2>&1
+        fi
+        
+        if ! find /usr/bin /usr/sbin | grep -q -w shadow; then
+            ${installType} shadow >/dev/null 2>&1
         fi
     fi
 
     # Detect nginx version and provide the option of uninstalling it
-    if [[ "${selectCustomInstallType}" == "7" ]]; then
+    if echo "${selectCustomInstallType}" | grep -qwE ",7,|,8,|,7,8,"; then
         echoContent green " ---> Detected services that do not depend on Nginx, skip installation"
     else
         if ! find /usr/bin /usr/sbin | grep -q -w nginx; then
@@ -896,21 +1066,30 @@ installTools() {
     fi
 
     if ! find /usr/bin /usr/sbin | grep -q -w semanage; then
-        echoContent green " ---> Install semanage"
-        ${installType} bash-completion >/dev/null 2>&1
+        if [[ "${release}" == "alpine" ]]; then
+            echoContent green " ---> Install AppArmor security module (Alpine recommended)"
+            ${installType} apparmor apparmor-utils >/dev/null 2>&1
+            # Enable AppArmor service
+            if [[ -n "${alpineVersion}" ]] && [[ "${alpineVersion}" == "3.20" ]] || [[ "${alpineVersion}" > "3.20" ]]; then
+                rc-update add apparmor boot >/dev/null 2>&1
+                echoContent green " ---> AppArmor service configured to start at boot"
+            fi
+        else
+            echoContent green " ---> Install semanage"
+            ${installType} bash-completion >/dev/null 2>&1
 
-        if [[ "${centosVersion}" == "7" ]]; then
-            policyCoreUtils="policycoreutils-python.x86_64"
-        elif [[ "${centosVersion}" == "8" ]]; then
-            policyCoreUtils="policycoreutils-python-utils-2.9-9.el8.noarch"
-        fi
+            if [[ "${centosVersion}" == "7" ]]; then
+                policyCoreUtils="policycoreutils-python.x86_64"
+            elif [[ "${centosVersion}" == "8" ]]; then
+                policyCoreUtils="policycoreutils-python-utils-2.9-9.el8.noarch"
+            fi
 
-        if [[ -n "${policyCoreUtils}" ]]; then
-            ${installType} ${policyCoreUtils} >/dev/null 2>&1
-        fi
-        if [[ -n $(which semanage) ]]; then
-            semanage port -a -t http_port_t -p tcp 31300
-
+            if [[ -n "${policyCoreUtils}" ]]; then
+                ${installType} ${policyCoreUtils} >/dev/null 2>&1
+            fi
+            if [[ -n $(which semanage) ]]; then
+                semanage port -a -t http_port_t -p tcp 31300
+            fi
         fi
     fi
     if [[ "${selectCustomInstallType}" == "7" ]]; then
@@ -977,10 +1156,20 @@ gpgkey=https://nginx.org/keys/nginx_signing.key
 module_hotfixes=true
 EOF
         sudo yum-config-manager --enable nginx-mainline >/dev/null 2>&1
+    elif [[ "${release}" == "alpine" ]]; then
+        # Alpine 3.20 special handling
+        if [[ -n "${alpineVersion}" ]] && [[ "${alpineVersion}" == "3.20" ]] || [[ "${alpineVersion}" > "3.20" ]]; then
+            echoContent green " ---> Configure Alpine ${alpineVersion} Nginx repository"
+            # Ensure using community repository to get latest nginx version
+            echo "http://dl-cdn.alpinelinux.org/alpine/v${alpineVersion}/community" >> /etc/apk/repositories
+            apk update --no-cache >/dev/null 2>&1
+        fi
+        
+        # Remove default configuration file
+        rm -f "${nginxConfigPath}default.conf" >/dev/null 2>&1
     fi
     ${installType} nginx >/dev/null 2>&1
-    systemctl daemon-reload
-    systemctl enable nginx
+    bootStartup nginx
 }
 
 # Install warp
@@ -990,7 +1179,11 @@ installWarp() {
         exit 0
     fi
 
-    ${installType} gnupg2 -y >/dev/null 2>&1
+    if [[ "${release}" == "alpine" ]]; then
+        ${installType} gnupg >/dev/null 2>&1
+    else
+        ${installType} gnupg2 -y >/dev/null 2>&1
+    fi
     if [[ "${release}" == "debian" ]]; then
         curl -s https://pkg.cloudflareclient.com/pubkey.gpg | sudo apt-key add - >/dev/null 2>&1
         echo "deb http://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list >/dev/null 2>&1
@@ -1004,6 +1197,12 @@ installWarp() {
     elif [[ "${release}" == "centos" ]]; then
         ${installType} yum-utils >/dev/null 2>&1
         sudo rpm -ivh "http://pkg.cloudflareclient.com/cloudflare-release-el${centosVersion}.rpm" >/dev/null 2>&1
+        
+    elif [[ "${release}" == "alpine" ]]; then
+        echoContent red " ---> WARP client does not support Alpine Linux yet"
+        echoContent yellow " ---> Recommend using warp-reg tool as alternative to WARP client"
+        echoContent yellow " ---> Or consider using other systems to run WARP"
+        return 1
     fi
 
     echoContent green " ---> Install WARP"
@@ -1012,7 +1211,14 @@ installWarp() {
         echoContent red " ---> Failed to install WARP"
         exit 0
     fi
-    systemctl enable warp-svc
+    
+    # Enable WARP service
+    if [[ "${release}" == "alpine" ]]; then
+        # Alpine uses OpenRC - but since WARP doesn't support Alpine, this code won't execute
+        rc-update add warp-svc default >/dev/null 2>&1
+    else
+        systemctl enable warp-svc
+    fi
     warp-cli --accept-tos register
     warp-cli --accept-tos set-mode proxy
     warp-cli --accept-tos set-proxy-port 31303
@@ -1031,17 +1237,17 @@ installWarp() {
 checkDNSIP() {
     local domain=$1
     local dnsIP=
-    local type=4
-    dnsIP=$(dig @1.1.1.1 +time=1 +short "${domain}")
+    ipType=4
+    dnsIP=$(dig @1.1.1.1 +time=2 +short "${domain}" | grep -E "^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])$")
     if [[ -z "${dnsIP}" ]]; then
-        dnsIP=$(dig @8.8.8.8 +time=1 +short "${domain}")
+        dnsIP=$(dig @8.8.8.8 +time=2 +short "${domain}" | grep -E "^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])$")
     fi
     if echo "${dnsIP}" | grep -q "timed out" || [[ -z "${dnsIP}" ]]; then
         echo
         echoContent red " ---> Unable to obtain domain name IPv4 address through DNS"
         echoContent green " ---> Try to check the domain name IPv6 address"
-        dnsIP=$(dig @2606:4700:4700::1111 +time=1 aaaa +short "${domain}")
-        type=6
+        dnsIP=$(dig @2606:4700:4700::1111 +time=2 aaaa +short "${domain}")
+        ipType=6
         if echo "${dnsIP}" | grep -q "network unreachable" || [[ -z "${dnsIP}" ]]; then
             echoContent red " ---> Unable to obtain domain name IPv6 address through DNS, exit installation"
             exit 0
@@ -1049,7 +1255,7 @@ checkDNSIP() {
     fi
     local publicIP=
 
-    publicIP=$(getPublicIP "${type}")
+    publicIP=$(getPublicIP "${ipType}")
     if [[ "${publicIP}" != "${dnsIP}" ]]; then
         echoContent red " ---> The domain name resolution IP is inconsistent with the current server IP\n"
         echoContent yellow " ---> Please check whether the domain name resolution is valid and correct"
@@ -1092,8 +1298,8 @@ EOF
     handleNginx start
 
     # Check domain name + port opening
-    checkPortOpenResult=$(curl -s -m 2 "http://${domain}:${port}/checkPort")
-    localIP=$(curl -s -m 2 "http://${domain}:${port}/ip")
+    checkPortOpenResult=$(curl -s -m 10 "http://${domain}:${port}/checkPort")
+    localIP=$(curl -s -m 10 "http://${domain}:${port}/ip")
     rm "${nginxConfigPath}checkPortOpen.conf"
     handleNginx stop
     if [[ "${checkPortOpenResult}" == "fjkvymb6len" ]]; then
@@ -1629,6 +1835,17 @@ initRandomPath() {
     customPath=${initCustomPath}
 }
 
+# Random number
+randomNum() {
+    if [[ "${release}" == "alpine" ]]; then
+        local ranNum=
+        ranNum="$(shuf -i "$1"-"$2" -n 1)"
+        echo "${ranNum}"
+    else
+        echo $((RANDOM % $2 + $1))
+    fi
+}
+
 # Custom/random path
 randomPathFunction() {
     echoContent skyBlue "\nProgress$1/${totalProgress}: Generate random path"
@@ -1669,16 +1886,27 @@ nginxBlog() {
         read -r -p "Detected installation of fake site, do you need to reinstall [y/n]:" nginxBlogInstallStatus
         if [[ "${nginxBlogInstallStatus}" == "y" ]]; then
             rm -rf "${nginxStaticPath}"
-            randomNum=$((RANDOM % 6 + 1))
-            wget -q -P "${nginxStaticPath}" https://raw.githubusercontent.com/mack-a/v2ray-agent/master/fodder/blog/unable/html${randomNum}.zip >/dev/null
+            randomNum=$(randomNum 1 9)
+            if [[ "${release}" == "alpine" ]]; then
+                wget -q -P "${nginxStaticPath}" "https://raw.githubusercontent.com/mack-a/v2ray-agent/master/fodder/blog/unable/html${randomNum}.zip"
+            else
+                wget -q "${wgetShowProgressStatus}" -P "${nginxStaticPath}" "https://raw.githubusercontent.com/mack-a/v2ray-agent/master/fodder/blog/unable/html${randomNum}.zip"
+            fi
+
             unzip -o "${nginxStaticPath}html${randomNum}.zip" -d "${nginxStaticPath}" >/dev/null
             rm -f "${nginxStaticPath}html${randomNum}.zip*"
             echoContent green " ---> Added fake site successfully"
         fi
     else
-        randomNum=$((RANDOM % 6 + 1))
+        randomNum=$(randomNum 1 9)
         rm -rf "${nginxStaticPath}"
-        wget -q -P "${nginxStaticPath}" https://raw.githubusercontent.com/mack-a/v2ray-agent/master/fodder/blog/unable/html${randomNum}.zip >/dev/null
+
+        if [[ "${release}" == "alpine" ]]; then
+            wget -q -P "${nginxStaticPath}" "https://raw.githubusercontent.com/mack-a/v2ray-agent/master/fodder/blog/unable/html${randomNum}.zip"
+        else
+            wget -q "${wgetShowProgressStatus}" -P "${nginxStaticPath}" "https://raw.githubusercontent.com/mack-a/v2ray-agent/master/fodder/blog/unable/html${randomNum}.zip"
+        fi
+
         unzip -o "${nginxStaticPath}html${randomNum}.zip" -d "${nginxStaticPath}" >/dev/null
         rm -f "${nginxStaticPath}html${randomNum}.zip*"
         echoContent green " ---> Added fake site successfully"
@@ -1689,9 +1917,34 @@ nginxBlog() {
 # Modify http_port_t port
 updateSELinuxHTTPPortT() {
 
-    $(find /usr/bin /usr/sbin | grep -w journalctl) -xe >/etc/v2ray-agent/nginx_error.log 2>&1
+    if [[ "${release}" == "alpine" ]]; then
+        # Alpine doesn't have journalctl, use dmesg or /var/log/messages
+        if [[ -f "/var/log/messages" ]]; then
+            tail -n 50 /var/log/messages >/etc/v2ray-agent/nginx_error.log 2>&1
+        else
+            dmesg | tail -n 50 >/etc/v2ray-agent/nginx_error.log 2>&1
+        fi
+    else
+        $(find /usr/bin /usr/sbin | grep -w journalctl) -xe >/etc/v2ray-agent/nginx_error.log 2>&1
+    fi
 
-    if find /usr/bin /usr/sbin | grep -q -w semanage && find /usr/bin /usr/sbin | grep -q -w getenforce && grep -E "31300|31302" </etc/v2ray-agent/nginx_error.log | grep -q "Permission denied"; then
+    if [[ "${release}" == "alpine" ]]; then
+        # Alpine uses AppArmor instead of SELinux
+        if grep -E "31300|31302" </etc/v2ray-agent/nginx_error.log | grep -q "Permission denied"; then
+            echoContent red " ---> Check AppArmor configuration"
+            if command -v aa-status >/dev/null 2>&1; then
+                echoContent green " ---> Detected AppArmor, attempting to adjust nginx configuration"
+                # Check and reload AppArmor configuration
+                if [[ -f "/etc/apparmor.d/usr.sbin.nginx" ]]; then
+                    apparmor_parser -r /etc/apparmor.d/usr.sbin.nginx >/dev/null 2>&1
+                    echoContent green " ---> AppArmor nginx configuration reloaded"
+                fi
+            else
+                echoContent yellow " ---> AppArmor not installed or not started, permission restrictions may come from other sources"
+            fi
+        fi
+        handleNginx start
+    elif find /usr/bin /usr/sbin | grep -q -w semanage && find /usr/bin /usr/sbin | grep -q -w getenforce && grep -E "31300|31302" </etc/v2ray-agent/nginx_error.log | grep -q "Permission denied"; then
         echoContent red " ---> Check if the SELinux port is open"
         if ! $(find /usr/bin /usr/sbin | grep -w semanage) port -l | grep http_port | grep -q 31300; then
             $(find /usr/bin /usr/sbin | grep -w semanage) port -a -t http_port_t -p tcp 31300
@@ -1712,28 +1965,35 @@ updateSELinuxHTTPPortT() {
 #Operation Nginx
 handleNginx() {
 
-    if [[ -z $(pgrep -f "nginx") ]] && [[ "$1" == "start" ]]; then
-        systemctl start nginx 2>/etc/v2ray-agent/nginx_error.log
+    if ! echo "${selectCustomInstallType}" | grep -qwE ",7,|,8,|,7,8," && [[ -z $(pgrep -f "nginx") ]] && [[ "$1" == "start" ]]; then
+        if [[ "${release}" == "alpine" ]]; then
+            rc-service nginx start 2>/etc/v2ray-agent/nginx_error.log
+        else
+            systemctl start nginx 2>/etc/v2ray-agent/nginx_error.log
+        fi
 
         sleep 0.5
 
         if [[ -z $(pgrep -f "nginx") ]]; then
             echoContent red " ---> Nginx failed to start"
             echoContent red " ---> Please try to install nginx manually and execute the script again"
-
+            nginx
             if grep -q "journalctl -xe" </etc/v2ray-agent/nginx_error.log; then
                 updateSELinuxHTTPPortT
             fi
-
-        # exit 0
         else
             echoContent green " ---> Nginx started successfully"
         fi
 
     elif [[ -n $(pgrep -f "nginx") ]] && [[ "$1" == "stop" ]]; then
-        systemctl stop nginx
+        if [[ "${release}" == "alpine" ]]; then
+            rc-service nginx stop
+        else
+            systemctl stop nginx
+        fi
         sleep 0.5
-        if [[ -n $(pgrep -f "nginx") ]]; then
+
+        if [[ -z ${btDomain} && -n $(pgrep -f "nginx") ]]; then
             pgrep -f "nginx" | xargs kill -9
         fi
         echoContent green " ---> Nginx closed successfully"
@@ -1869,8 +2129,11 @@ installV2Ray() {
         fi
 
         echoContent green " ---> v2ray-core version:${version}"
-        # if wget --help | grep -q show-progress; then
-        wget -c -q "${wgetShowProgressStatus}" -P /etc/v2ray-agent/v2ray/ "https://github.com/v2fly/v2ray-core/releases/download/${version}/${v2rayCoreCPUVendor}.zip"
+        if [[ "${release}" == "alpine" ]]; then
+            wget -c -q -P /etc/v2ray-agent/v2ray/ "https://github.com/v2fly/v2ray-core/releases/download/${version}/${v2rayCoreCPUVendor}.zip"
+        else
+            wget -c -q "${wgetShowProgressStatus}" -P /etc/v2ray-agent/v2ray/ "https://github.com/v2fly/v2ray-core/releases/download/${version}/${v2rayCoreCPUVendor}.zip"
+        fi
         #else
         # wget -c -P /etc/v2ray-agent/v2ray/ "https://github.com/v2fly/v2ray-core/releases/download/${version}/${v2rayCoreCPUVendor}.zip" >/dev/ null 2>&1
         # fi
@@ -1905,7 +2168,11 @@ installHysteria() {
         version=$(curl -s "https://api.github.com/repos/apernet/hysteria/releases?per_page=10" | jq -r ".[]|select (.prerelease==${prereleaseStatus})|.tag_name" | grep -v "app/v2" | head -1)
 
         echoContent green " ---> Hysteria version:${version}"
-        wget -c -q "${wgetShowProgressStatus}" -P /etc/v2ray-agent/hysteria/ "https://github.com/apernet/hysteria/releases/download/${version}/${hysteriaCoreCPUVendor}"
+        if [[ "${release}" == "alpine" ]]; then
+            wget -c -q -P /etc/v2ray-agent/hysteria/ "https://github.com/apernet/hysteria/releases/download/${version}/${hysteriaCoreCPUVendor}"
+        else
+            wget -c -q "${wgetShowProgressStatus}" -P /etc/v2ray-agent/hysteria/ "https://github.com/apernet/hysteria/releases/download/${version}/${hysteriaCoreCPUVendor}"
+        fi
         mv "/etc/v2ray-agent/hysteria/${hysteriaCoreCPUVendor}" /etc/v2ray-agent/hysteria/hysteria
         chmod 655 /etc/v2ray-agent/hysteria/hysteria
     else
@@ -1929,7 +2196,11 @@ installTuic() {
         version=$(curl -s "https://api.github.com/repos/EAimTY/tuic/releases?per_page=1" | jq -r '.[]|select (.prerelease==false)|.tag_name')
 
         echoContent green " ---> Tuic version:${version}"
-        wget -c -q "${wgetShowProgressStatus}" -P /etc/v2ray-agent/tuic/ "https://github.com/EAimTY/tuic/releases/download/${version}/${version}${tuicCoreCPUVendor}"
+        if [[ "${release}" == "alpine" ]]; then
+            wget -c -q -P /etc/v2ray-agent/tuic/ "https://github.com/EAimTY/tuic/releases/download/${version}/${version}${tuicCoreCPUVendor}"
+        else
+            wget -c -q "${wgetShowProgressStatus}" -P /etc/v2ray-agent/tuic/ "https://github.com/EAimTY/tuic/releases/download/${version}/${version}${tuicCoreCPUVendor}"
+        fi
         mv "/etc/v2ray-agent/tuic/${version}${tuicCoreCPUVendor}" /etc/v2ray-agent/tuic/tuic
         chmod 655 /etc/v2ray-agent/tuic/tuic
     else
@@ -1945,8 +2216,10 @@ installTuic() {
 }
 # Check wget showProgress
 checkWgetShowProgress() {
-    if find /usr/bin /usr/sbin | grep -q -w wget && wget --help | grep -q show-progress; then
-        wgetShowProgressStatus="--show-progress"
+    if [[ "${release}" != "alpine" ]]; then
+        if find /usr/bin /usr/sbin | grep -q -w wget && wget --help | grep -q show-progress; then
+            wgetShowProgressStatus="--show-progress"
+        fi
     fi
 }
 # Install xray
@@ -1964,8 +2237,11 @@ installXray() {
         version=$(curl -s "https://api.github.com/repos/XTLS/Xray-core/releases?per_page=1" | jq -r ".[].tag_name")
 
         echoContent green " ---> Xray-core version:${version}"
-
-        wget -c -q "${wgetShowProgressStatus}" -P /etc/v2ray-agent/xray/ "https://github.com/XTLS/Xray-core/releases/download/${version}/${xrayCoreCPUVendor}.zip"
+        if [[ "${release}" == "alpine" ]]; then
+            wget -c -q -P /etc/v2ray-agent/xray/ "https://github.com/XTLS/Xray-core/releases/download/${version}/${xrayCoreCPUVendor}.zip"
+        else
+            wget -c -q "${wgetShowProgressStatus}" -P /etc/v2ray-agent/xray/ "https://github.com/XTLS/Xray-core/releases/download/${version}/${xrayCoreCPUVendor}.zip"
+        fi
         if [[ ! -f "/etc/v2ray-agent/xray/${xrayCoreCPUVendor}.zip" ]]; then
             echoContent red " ---> Core download failed, please try installation again"
             exit 0
@@ -1979,8 +2255,13 @@ installXray() {
         echo "version:${version}"
         rm /etc/v2ray-agent/xray/geo* >/dev/null 2>&1
 
-        wget -c -q "${wgetShowProgressStatus}" -P /etc/v2ray-agent/xray/ "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/${version}/geosite.dat"
-        wget -c -q "${wgetShowProgressStatus}" -P /etc/v2ray-agent/xray/ "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/${version}/geoip.dat"
+        if [[ "${release}" == "alpine" ]]; then
+            wget -c -q -P /etc/v2ray-agent/xray/ "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/${version}/geosite.dat"
+            wget -c -q -P /etc/v2ray-agent/xray/ "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/${version}/geoip.dat"
+        else
+            wget -c -q "${wgetShowProgressStatus}" -P /etc/v2ray-agent/xray/ "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/${version}/geosite.dat"
+            wget -c -q "${wgetShowProgressStatus}" -P /etc/v2ray-agent/xray/ "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/${version}/geoip.dat"
+        fi
 
         chmod 655 /etc/v2ray-agent/xray/xray
     else
@@ -2104,8 +2385,13 @@ updateGeoSite() {
     echoContent skyBlue "------------------------Version-------------------------------"
     echo "version:${version}"
     rm ${configPath}../geo* >/dev/null
-    wget -c -q "${wgetShowProgressStatus}" -P ${configPath}../ "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/${version}/geosite.dat"
-    wget -c -q "${wgetShowProgressStatus}" -P ${configPath}../ "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/${version}/geoip.dat"
+    if [[ "${release}" == "alpine" ]]; then
+        wget -c -q -P ${configPath}../ "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/${version}/geosite.dat"
+        wget -c -q -P ${configPath}../ "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/${version}/geoip.dat"
+    else
+        wget -c -q "${wgetShowProgressStatus}" -P ${configPath}../ "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/${version}/geosite.dat"
+        wget -c -q "${wgetShowProgressStatus}" -P ${configPath}../ "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/${version}/geoip.dat"
+    fi
     reloadCore
     echoContent green " ---> Update completed"
 
@@ -2125,8 +2411,11 @@ updateV2Ray() {
             version=${v2rayCoreVersion}
         fi
         echoContent green " ---> v2ray-core version:${version}"
-        # if wget --help | grep -q show-progress; then
-        wget -c -q "${wgetShowProgressStatus}" -P /etc/v2ray-agent/v2ray/ "https://github.com/v2fly/v2ray-core/releases/download/${version}/${v2rayCoreCPUVendor}.zip"
+        if [[ "${release}" == "alpine" ]]; then
+            wget -c -q -P /etc/v2ray-agent/v2ray/ "https://github.com/v2fly/v2ray-core/releases/download/${version}/${v2rayCoreCPUVendor}.zip"
+        else
+            wget -c -q "${wgetShowProgressStatus}" -P /etc/v2ray-agent/v2ray/ "https://github.com/v2fly/v2ray-core/releases/download/${version}/${v2rayCoreCPUVendor}.zip"
+        fi
         #else
         # wget -c -P "/etc/v2ray-agent/v2ray/ https://github.com/v2fly/v2ray-core/releases/download/${version}/${v2rayCoreCPUVendor}.zip" >/dev/ null 2>&1
         #fi
@@ -2198,8 +2487,11 @@ updateXray() {
         fi
 
         echoContent green " ---> Xray-core version:${version}"
-
-        wget -c -q "${wgetShowProgressStatus}" -P /etc/v2ray-agent/xray/ "https://github.com/XTLS/Xray-core/releases/download/${version}/${xrayCoreCPUVendor}.zip"
+        if [[ "${release}" == "alpine" ]]; then
+            wget -c -q -P /etc/v2ray-agent/xray/ "https://github.com/XTLS/Xray-core/releases/download/${version}/${xrayCoreCPUVendor}.zip"
+        else
+            wget -c -q "${wgetShowProgressStatus}" -P /etc/v2ray-agent/xray/ "https://github.com/XTLS/Xray-core/releases/download/${version}/${xrayCoreCPUVendor}.zip"
+        fi
 
         unzip -o "/etc/v2ray-agent/xray/${xrayCoreCPUVendor}.zip" -d /etc/v2ray-agent/xray >/dev/null
         rm -rf "/etc/v2ray-agent/xray/${xrayCoreCPUVendor}.zip"
@@ -5236,14 +5528,620 @@ handleFirewall() {
 bbrInstall() {
     echoContent red "\n================================================ ================="
     echoContent green "The mature works of [ylx2016] used for BBR and DD scripts, the address [https://github.com/ylx2016/Linux-NetSpeed], please be familiar with it"
-    echoContent yellow "1.Installation script [recommended original BBR+FQ]"
-    echoContent yellow "2.Return to the home directory"
-    echoContent red "================================================== ==============="
-    read -r -p "Please select:" installBBRStatus
-    if [[ "${installBBRStatus}" == "1" ]]; then
-        wget -N --no-check-certificate "https://raw.githubusercontent.com/ylx2016/Linux-NetSpeed/master/tcp.sh" && chmod +x tcp.sh && ./tcp.sh
+    
+    if [[ "${release}" == "alpine" ]]; then
+        echoContent yellow "Alpine Linux system detected"
+        echoContent yellow "1.Install Alpine-specific BBR optimization [Recommended]"
+        echoContent yellow "2.Try to install universal BBR script (may not be compatible)"
+        echoContent yellow "3.Install Alpine-specific DD script [System reinstall]"
+        echoContent yellow "4.Return to the home directory"
+        echoContent red "================================================== ==============="
+        read -r -p "Please select:" installBBRStatus
+        if [[ "${installBBRStatus}" == "1" ]]; then
+            installAlpineBBR
+        elif [[ "${installBBRStatus}" == "2" ]]; then
+            echoContent yellow "Trying to install universal BBR script..."
+            wget -N --no-check-certificate "https://raw.githubusercontent.com/ylx2016/Linux-NetSpeed/master/tcp.sh" && chmod +x tcp.sh && ./tcp.sh
+        elif [[ "${installBBRStatus}" == "3" ]]; then
+            installAlpineDD
+        else
+            menu
+        fi
     else
-        menu
+        echoContent yellow "1.Installation script [recommended original BBR+FQ]"
+        echoContent yellow "2.Return to the home directory"
+        echoContent red "================================================== ==============="
+        read -r -p "Please select:" installBBRStatus
+        if [[ "${installBBRStatus}" == "1" ]]; then
+            wget -N --no-check-certificate "https://raw.githubusercontent.com/ylx2016/Linux-NetSpeed/master/tcp.sh" && chmod +x tcp.sh && ./tcp.sh
+        else
+            menu
+        fi
+    fi
+}
+
+# Alpine Linux specific BBR installation
+installAlpineBBR() {
+    echoContent green "Starting Alpine Linux specific BBR optimization..."
+    
+    # Check if running as root
+    if [[ $EUID -ne 0 ]]; then
+        echoContent red "Please run this script as root user"
+        exit 1
+    fi
+    
+    # Check Alpine version
+    if [[ -n "${alpineVersion}" ]]; then
+        echoContent green "Detected Alpine ${alpineVersion}"
+    fi
+    
+    # Install necessary packages
+    echoContent green "Installing necessary system packages..."
+    apk update
+    apk add --no-cache linux-firmware linux-headers build-base
+    
+    # Check current kernel version
+    local currentKernel=$(uname -r)
+    echoContent green "Current kernel version: ${currentKernel}"
+    
+    # Check if BBR is already enabled
+    local bbrEnabled=$(sysctl net.ipv4.tcp_congestion_control 2>/dev/null | grep -o bbr)
+    if [[ -n "${bbrEnabled}" ]]; then
+        echoContent green "BBR is already enabled, current congestion control algorithm: $(sysctl net.ipv4.tcp_congestion_control | cut -d'=' -f2 | tr -d ' ')"
+    else
+        echoContent yellow "BBR is not enabled, current congestion control algorithm: $(sysctl net.ipv4.tcp_congestion_control | cut -d'=' -f2 | tr -d ' ')"
+    fi
+    
+    # Check if BBR is supported
+    local bbrSupport=$(sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -o bbr)
+    if [[ -n "${bbrSupport}" ]]; then
+        echoContent green "Kernel supports BBR, can enable directly"
+        enableAlpineBBR
+    else
+        echoContent yellow "Current kernel does not support BBR, need to upgrade kernel"
+        upgradeAlpineKernel
+    fi
+}
+
+# Enable Alpine BBR
+enableAlpineBBR() {
+    echoContent green "Enabling BBR optimization..."
+    
+    # Backup current sysctl configuration
+    if [[ ! -f "/etc/sysctl.conf.backup" ]]; then
+        cp /etc/sysctl.conf /etc/sysctl.conf.backup 2>/dev/null || true
+    fi
+    
+    # Create BBR optimization configuration
+    cat > /etc/sysctl.d/99-bbr.conf << EOF
+# BBR optimization configuration
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+
+# Network optimization parameters
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+net.ipv4.tcp_rmem = 4096 87380 16777216
+net.ipv4.tcp_wmem = 4096 65536 16777216
+net.ipv4.tcp_collapse = 0
+net.ipv4.tcp_notsent_lowat = 131072
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_slow_start_after_idle = 0
+net.ipv4.tcp_tw_reuse = 1
+net.ipv4.ip_local_port_range = 1024 65535
+net.core.netdev_max_backlog = 5000
+net.ipv4.tcp_max_syn_backlog = 8192
+net.ipv4.tcp_max_tw_buckets = 2000000
+net.ipv4.tcp_fin_timeout = 15
+net.ipv4.tcp_keepalive_time = 1200
+net.ipv4.tcp_keepalive_intvl = 15
+net.ipv4.tcp_keepalive_probes = 5
+net.ipv4.tcp_mtu_probing = 1
+net.core.optmem_max = 65536
+net.ipv4.tcp_fack = 1
+net.ipv4.tcp_sack = 1
+net.ipv4.tcp_window_scaling = 1
+net.ipv4.tcp_timestamps = 1
+net.ipv4.tcp_ecn = 1
+net.ipv4.tcp_syn_retries = 2
+net.ipv4.tcp_synack_retries = 2
+net.ipv4.tcp_retries2 = 3
+net.ipv4.tcp_orphan_retries = 3
+net.ipv4.tcp_retrans_collapse = 0
+net.ipv4.tcp_abort_on_overflow = 0
+net.ipv4.tcp_stdurg = 0
+net.ipv4.tcp_rfc1337 = 0
+net.ipv4.tcp_max_orphans = 3276800
+net.ipv4.tcp_no_metrics_save = 1
+net.ipv4.tcp_moderate_rcvbuf = 1
+net.ipv4.tcp_tso_win_divisor = 3
+net.ipv4.tcp_congestion_control = bbr
+net.ipv4.tcp_available_congestion_control = bbr
+net.core.default_qdisc = fq
+EOF
+    
+    # Apply configuration
+    sysctl -p /etc/sysctl.d/99-bbr.conf
+    
+    # Verify BBR is enabled
+    local bbrStatus=$(sysctl net.ipv4.tcp_congestion_control 2>/dev/null | grep -o bbr)
+    if [[ -n "${bbrStatus}" ]]; then
+        echoContent green "BBR enabled successfully!"
+        echoContent green "Current congestion control algorithm: $(sysctl net.ipv4.tcp_congestion_control | cut -d'=' -f2 | tr -d ' ')"
+        echoContent green "Current queue scheduler: $(sysctl net.core.default_qdisc | cut -d'=' -f2 | tr -d ' ')"
+    else
+        echoContent red "BBR enable failed, please check if kernel supports BBR"
+    fi
+    
+    # Show optimization suggestions
+    echoContent yellow "\nOptimization suggestions:"
+    echoContent yellow "1. Restart system to ensure all configurations take effect"
+    echoContent yellow "2. Use 'sysctl net.ipv4.tcp_congestion_control' to check BBR status"
+    echoContent yellow "3. Use 'ss -i' to view connection details"
+}
+
+# Upgrade Alpine kernel to support BBR
+upgradeAlpineKernel() {
+    echoContent yellow "Current kernel does not support BBR, need to upgrade kernel..."
+    echoContent yellow "Note: Kernel upgrade may require system restart"
+    
+    read -r -p "Continue to upgrade kernel? [y/N]: " upgradeKernel
+    if [[ "${upgradeKernel}" != "y" && "${upgradeKernel}" != "Y" ]]; then
+        echoContent yellow "Kernel upgrade cancelled"
+        return
+    fi
+    
+    echoContent green "Starting Alpine kernel upgrade..."
+    
+    # Update package index
+    apk update
+    
+    # Install latest kernel
+    if [[ -n "${alpineVersion}" ]] && [[ "${alpineVersion}" == "3.20" ]] || [[ "${alpineVersion}" > "3.20" ]]; then
+        echoContent green "Installing Alpine ${alpineVersion} latest kernel..."
+        apk add --no-cache linux-lts linux-lts-headers
+    else
+        echoContent green "Installing latest stable kernel..."
+        apk add --no-cache linux-virt linux-virt-headers
+    fi
+    
+    # Check if kernel installation was successful
+    local newKernel=$(ls /boot/vmlinuz-* 2>/dev/null | grep -v rescue | tail -1 | xargs basename 2>/dev/null)
+    if [[ -n "${newKernel}" ]]; then
+        echoContent green "New kernel installed successfully: ${newKernel}"
+        echoContent yellow "Please restart system to use new kernel, then re-run BBR installation script"
+        
+        read -r -p "Restart system now? [y/N]: " rebootNow
+        if [[ "${rebootNow}" == "y" || "${rebootNow}" == "Y" ]]; then
+            echoContent green "System will restart in 5 seconds..."
+            sleep 5
+            reboot
+        fi
+    else
+        echoContent red "Kernel installation failed, please manually install BBR-supported kernel"
+    fi
+}
+
+# Alpine Linux specific DD script
+installAlpineDD() {
+    echoContent red "\n================================================ ================="
+    echoContent yellow "Alpine Linux system reinstall script"
+    echoContent red "Warning: This operation will completely reinstall the system, all data will be lost!"
+    echoContent red "Please ensure important data is backed up!"
+    echoContent red "================================================== ==============="
+    
+    read -r -p "Confirm to continue system reinstall? [y/N]: " confirmDD
+    if [[ "${confirmDD}" != "y" && "${confirmDD}" != "Y" ]]; then
+        echoContent yellow "System reinstall cancelled"
+        return
+    fi
+    
+    echoContent yellow "Select reinstall system type:"
+    echoContent yellow "1. Alpine Linux 3.20 (Latest stable version)"
+    echoContent yellow "2. Alpine Linux 3.19"
+    echoContent yellow "3. Alpine Linux 3.18"
+    echoContent yellow "4. Use universal DD script (may not be compatible)"
+    echoContent yellow "5. Cancel"
+    
+    read -r -p "Please select system version [1-5]: " alpineVersionChoice
+    
+    case ${alpineVersionChoice} in
+        1)
+            echoContent green "Preparing to reinstall as Alpine Linux 3.20..."
+            installAlpineSystem "3.20"
+            ;;
+        2)
+            echoContent green "Preparing to reinstall as Alpine Linux 3.19..."
+            installAlpineSystem "3.19"
+            ;;
+        3)
+            echoContent green "Preparing to reinstall as Alpine Linux 3.18..."
+            installAlpineSystem "3.18"
+            ;;
+        4)
+            echoContent yellow "Using universal DD script..."
+            echoContent yellow "Note: Universal DD script may not be fully compatible with Alpine Linux"
+            bash <(wget -qO- https://github.com/fcurrk/reinstall/raw/master/NewReinstall.sh)
+            ;;
+        5)
+            echoContent yellow "System reinstall cancelled"
+            return
+            ;;
+        *)
+            echoContent red "Invalid selection, operation cancelled"
+            return
+            ;;
+    esac
+}
+
+# Install Alpine system
+installAlpineSystem() {
+    local targetVersion=$1
+    echoContent green "Starting Alpine Linux ${targetVersion} reinstall..."
+    
+    # Check network connection
+    if ! ping -c 1 8.8.8.8 >/dev/null 2>&1; then
+        echoContent red "Network connection failed, please check network settings"
+        return 1
+    fi
+    
+    # Download Alpine installation script
+    echoContent green "Downloading Alpine installation script..."
+    local installScript="/tmp/alpine-install.sh"
+    
+    # Create Alpine installation script
+    cat > "${installScript}" << EOF
+#!/bin/sh
+# Alpine Linux automatic installation script
+
+# Set installation parameters
+export ALPINE_VERSION="${targetVersion}"
+export ALPINE_MIRROR="http://dl-cdn.alpinelinux.org/alpine"
+export ALPINE_ARCH="x86_64"
+export ALPINE_VARIANT="virt"
+
+# Download Alpine ISO
+echo "Downloading Alpine Linux \${ALPINE_VERSION} ISO..."
+wget -O /tmp/alpine.iso "\${ALPINE_MIRROR}/v\${ALPINE_VERSION}/releases/\${ALPINE_ARCH}/alpine-\${ALPINE_VARIANT}-\${ALPINE_VERSION}-\${ALPINE_ARCH}.iso"
+
+# Verify download
+if [ ! -f "/tmp/alpine.iso" ]; then
+    echo "ISO download failed"
+    exit 1
+fi
+
+# Prepare installation
+echo "Preparing to install Alpine Linux \${ALPINE_VERSION}..."
+echo "Note: This operation will completely rewrite the disk, all data will be lost!"
+
+# Here we need to use the corresponding DD command according to the specific VPS provider
+# Since different VPS providers have different reinstall methods, here we provide general guidance
+
+echo "Please choose the corresponding reinstall method according to your VPS provider:"
+echo "1. If your VPS supports Alpine Linux, please select Alpine \${ALPINE_VERSION} in the control panel"
+echo "2. If custom ISO is supported, please upload the downloaded ISO file"
+echo "3. If DD reinstall is supported, please use the following command:"
+echo "   dd if=/tmp/alpine.iso of=/dev/sda bs=4M status=progress"
+
+echo "After installation is complete, please re-run the v2ray-agent installation script"
+EOF
+    
+    chmod +x "${installScript}"
+    
+    echoContent green "Alpine installation script is ready"
+    echoContent yellow "Due to different reinstall methods for different VPS providers, please follow the guidance below:"
+    echoContent yellow ""
+    echoContent yellow "1. If your VPS control panel supports Alpine Linux:"
+    echoContent yellow "   - Select reinstall system in control panel"
+    echoContent yellow "   - Select Alpine Linux ${targetVersion}"
+    echoContent yellow "   - Confirm reinstall"
+    echoContent yellow ""
+    echoContent yellow "2. If custom ISO is supported:"
+    echoContent yellow "   - Download Alpine Linux ${targetVersion} ISO"
+    echoContent yellow "   - Upload ISO file in control panel"
+    echoContent yellow "   - Select boot from ISO and install"
+    echoContent yellow ""
+    echoContent yellow "3. If DD reinstall is supported:"
+    echoContent yellow "   - Use universal DD script: bash <(wget -qO- https://github.com/fcurrk/reinstall/raw/master/NewReinstall.sh)"
+    echoContent yellow "   - Select Alpine Linux or minimal system in DD script"
+    echoContent yellow ""
+    echoContent yellow "4. Manual DD command (Advanced users):"
+    echoContent yellow "   - Download Alpine ISO: wget -O alpine.iso http://dl-cdn.alpinelinux.org/alpine/v${targetVersion}/releases/x86_64/alpine-virt-${targetVersion}-x86_64.iso"
+    echoContent yellow "   - DD to disk: dd if=alpine.iso of=/dev/sda bs=4M status=progress"
+    echoContent yellow ""
+    echoContent yellow "After reinstall is complete, please re-run the v2ray-agent installation script"
+    
+    # Provide quick download link
+    echoContent green "\nQuick download link:"
+    echoContent green "Alpine Linux ${targetVersion} ISO: http://dl-cdn.alpinelinux.org/alpine/v${targetVersion}/releases/x86_64/alpine-virt-${targetVersion}-x86_64.iso"
+    
+    # Clean up temporary files
+    rm -f "${installScript}"
+}
+
+# Install Alpine startup service
+installAlpineStartup() {
+    local serviceName=$1
+    
+    # Check and install openrc if not exists (Alpine 3.20+ requires)
+    if [[ -n "${alpineVersion}" ]] && [[ "${alpineVersion}" == "3.20" ]] || [[ "${alpineVersion}" > "3.20" ]]; then
+        if ! find /sbin /usr/sbin | grep -q -w openrc; then
+            echoContent green " ---> Installing OpenRC (Alpine ${alpineVersion})"
+            ${installType} openrc >/dev/null 2>&1
+        fi
+    fi
+    
+    # Fix Alpine 3.20+ /var/run directory issue
+    if [[ -n "${alpineVersion}" ]] && [[ "${alpineVersion}" == "3.20" ]] || [[ "${alpineVersion}" > "3.20" ]]; then
+        echoContent green " ---> Fixing Alpine ${alpineVersion} /var/run directory issue"
+        
+        # Check if /var/run is a symbolic link
+        if [[ -L "/var/run" ]]; then
+            echoContent yellow " ---> Detected /var/run as symbolic link, fixing..."
+            # Backup original link
+            cp -P /var/run /var/run.backup 2>/dev/null || true
+            
+            # Remove symbolic link and create real directory
+            rm -f /var/run
+            mkdir -p /var/run
+            chmod 755 /var/run
+            chown root:root /var/run
+            
+            echoContent green " ---> /var/run directory fix completed"
+        fi
+        
+        # Ensure necessary directories exist
+        mkdir -p /var/run/xray 2>/dev/null || true
+        mkdir -p /var/run/sing-box 2>/dev/null || true
+        chmod 755 /var/run/xray 2>/dev/null || true
+        chmod 755 /var/run/sing-box 2>/dev/null || true
+    fi
+    
+    if [[ "${serviceName}" == "sing-box" ]]; then
+        cat <<EOF >"/etc/init.d/${serviceName}"
+#!/sbin/openrc-run
+
+description="sing-box service"
+command="/etc/v2ray-agent/sing-box/sing-box"
+command_args="run -c /etc/v2ray-agent/sing-box/conf/config.json"
+command_background=true
+pidfile="/var/run/sing-box.pid"
+command_user="root"
+
+depend() {
+    need net
+    after firewall
+}
+
+start_pre() {
+    # Fix Alpine 3.20+ checkpath issue
+    if [[ -n "${alpineVersion}" ]] && [[ "${alpineVersion}" == "3.20" ]] || [[ "${alpineVersion}" > "3.20" ]]; then
+        # Create directory directly without using checkpath
+        mkdir -p /var/run
+        chmod 755 /var/run
+        chown root:root /var/run
+    else
+        checkpath --directory --owner root:root --mode 0755 /var/run
+    fi
+}
+EOF
+    elif [[ "${serviceName}" == "xray" ]]; then
+        cat <<EOF >"/etc/init.d/${serviceName}"
+#!/sbin/openrc-run
+
+description="xray service"
+command="/etc/v2ray-agent/xray/xray"
+command_args="run -confdir /etc/v2ray-agent/xray/conf"
+command_background=true
+pidfile="/var/run/xray.pid"
+command_user="root"
+
+depend() {
+    need net
+    after firewall
+}
+
+start_pre() {
+    # Fix Alpine 3.20+ checkpath issue
+    if [[ -n "${alpineVersion}" ]] && [[ "${alpineVersion}" == "3.20" ]] || [[ "${alpineVersion}" > "3.20" ]]; then
+        # Create directory directly without using checkpath
+        mkdir -p /var/run
+        chmod 755 /var/run
+        chown root:root /var/run
+    else
+        checkpath --directory --owner root:root --mode 0755 /var/run
+    fi
+}
+EOF
+    fi
+
+    chmod +x "/etc/init.d/${serviceName}"
+    
+    # Alpine 3.20+ additional configuration
+    if [[ -n "${alpineVersion}" ]] && [[ "${alpineVersion}" == "3.20" ]] || [[ "${alpineVersion}" > "3.20" ]]; then
+        # Ensure service is in correct runlevel
+        rc-update add "${serviceName}" default >/dev/null 2>&1
+        
+        # Reload OpenRC configuration
+        rc-update show >/dev/null 2>&1
+        
+        echoContent green " ---> Alpine ${alpineVersion} ${serviceName} service configuration completed"
+    fi
+}
+
+# Install sing-box startup service
+installSingBoxService() {
+    echoContent skyBlue "\nProgress $1/${totalProgress}: Configuring sing-box startup"
+    execStart='/etc/v2ray-agent/sing-box/sing-box run -c /etc/v2ray-agent/sing-box/conf/config.json'
+
+    if [[ -n $(find /bin /usr/bin -name "systemctl") && "${release}" != "alpine" ]]; then
+        rm -rf /etc/systemd/system/sing-box.service
+        touch /etc/systemd/system/sing-box.service
+        cat <<EOF >/etc/systemd/system/sing-box.service
+[Unit]
+Description=Sing-Box Service
+Documentation=https://sing-box.sagernet.org
+After=network.target nss-lookup.target
+
+[Service]
+User=root
+WorkingDirectory=/root
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+ExecStart=${execStart}
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=10
+LimitNPROC=infinity
+LimitNOFILE=infinity
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        bootStartup "sing-box.service"
+    elif [[ "${release}" == "alpine" ]]; then
+        installAlpineStartup "sing-box"
+        bootStartup "sing-box"
+    fi
+
+    echoContent green " ---> sing-box startup configuration completed"
+}
+
+# Install Xray startup service
+installXrayService() {
+    echoContent skyBlue "\nProgress $1/${totalProgress}: Configuring Xray startup"
+    execStart='/etc/v2ray-agent/xray/xray run -confdir /etc/v2ray-agent/xray/conf'
+    if [[ -n $(find /bin /usr/bin -name "systemctl") ]]; then
+        rm -rf /etc/systemd/system/xray.service
+        touch /etc/systemd/system/xray.service
+        cat <<EOF >/etc/systemd/system/xray.service
+[Unit]
+Description=Xray Service
+Documentation=https://github.com/xtls
+After=network.target nss-lookup.target
+[Service]
+User=root
+ExecStart=${execStart}
+Restart=on-failure
+RestartPreventExitStatus=23
+LimitNPROC=infinity
+LimitNOFILE=infinity
+[Install]
+WantedBy=multi-user.target
+EOF
+        bootStartup "xray.service"
+        echoContent green " ---> Xray startup configuration successful"
+    elif [[ "${release}" == "alpine" ]]; then
+        installAlpineStartup "xray"
+        bootStartup "xray"
+    fi
+}
+
+# Handle Hysteria
+handleHysteria() {
+    # shellcheck disable=SC2010
+    if find /bin /usr/bin | grep -q systemctl && ls /etc/systemd/system/ | grep -q hysteria.service; then
+        if [[ -z $(pgrep -f "hysteria/hysteria") ]] && [[ "$1" == "start" ]]; then
+            systemctl start hysteria.service
+        elif [[ -n $(pgrep -f "hysteria/hysteria") ]] && [[ "$1" == "stop" ]]; then
+            systemctl stop hysteria.service
+        fi
+    fi
+    sleep 0.8
+
+    if [[ "$1" == "start" ]]; then
+        if [[ -n $(pgrep -f "hysteria/hysteria") ]]; then
+            echoContent green " ---> Hysteria started successfully"
+        else
+            echoContent red "Hysteria startup failed"
+            echoContent red "Please manually execute [/etc/v2ray-agent/hysteria/hysteria --log-level debug -c /etc/v2ray-agent/hysteria/conf/config.json server] to view error logs"
+            exit 0
+        fi
+    elif [[ "$1" == "stop" ]]; then
+        if [[ -z $(pgrep -f "hysteria/hysteria") ]]; then
+            echoContent green " ---> Hysteria stopped successfully"
+        else
+            echoContent red "Hysteria stop failed"
+        fi
+    fi
+}
+
+# Handle Xray
+handleXray() {
+    if [[ -n $(find /bin /usr/bin -name "systemctl") ]]; then
+        if [[ -z $(pgrep -f "xray/xray") ]] && [[ "$1" == "start" ]]; then
+            systemctl start xray.service
+        elif [[ -n $(pgrep -f "xray/xray") ]] && [[ "$1" == "stop" ]]; then
+            systemctl stop xray.service
+        fi
+    elif [[ "${release}" == "alpine" ]]; then
+        if [[ -z $(pgrep -f "xray/xray") ]] && [[ "$1" == "start" ]]; then
+            rc-service xray start
+        elif [[ -n $(pgrep -f "xray/xray") ]] && [[ "$1" == "stop" ]]; then
+            rc-service xray stop
+        fi
+    fi
+    sleep 0.8
+
+    if [[ "$1" == "start" ]]; then
+        if [[ -n $(pgrep -f "xray/xray") ]]; then
+            echoContent green " ---> Xray started successfully"
+        else
+            echoContent red "Xray startup failed"
+            echoContent red "Please manually execute [systemctl status xray.service] to view error logs"
+            exit 0
+        fi
+    elif [[ "$1" == "stop" ]]; then
+        if [[ -z $(pgrep -f "xray/xray") ]]; then
+            echoContent green " ---> Xray stopped successfully"
+        else
+            echoContent red "Xray stop failed"
+        fi
+    fi
+}
+
+# Handle sing-box
+handleSingBox() {
+    if [[ -n $(find /bin /usr/bin -name "systemctl") ]]; then
+        if [[ -z $(pgrep -f "sing-box/sing-box") ]] && [[ "$1" == "start" ]]; then
+            systemctl start sing-box.service
+        elif [[ -n $(pgrep -f "sing-box/sing-box") ]] && [[ "$1" == "stop" ]]; then
+            systemctl stop sing-box.service
+        fi
+    elif [[ "${release}" == "alpine" ]]; then
+        if [[ -z $(pgrep -f "sing-box/sing-box") ]] && [[ "$1" == "start" ]]; then
+            rc-service sing-box start
+        elif [[ -n $(pgrep -f "sing-box/sing-box") ]] && [[ "$1" == "stop" ]]; then
+            rc-service sing-box stop
+        fi
+    fi
+    sleep 0.8
+
+    if [[ "$1" == "start" ]]; then
+        if [[ -n $(pgrep -f "sing-box/sing-box") ]]; then
+            echoContent green " ---> sing-box started successfully"
+        else
+            echoContent red "sing-box startup failed"
+            echoContent red "Please manually execute [systemctl status sing-box.service] to view error logs"
+            exit 0
+        fi
+    elif [[ "$1" == "stop" ]]; then
+        if [[ -z $(pgrep -f "sing-box/sing-box") ]]; then
+            echoContent green " ---> sing-box stopped successfully"
+        else
+            echoContent red "sing-box stop failed"
+        fi
+    fi
+}
+
+# Boot startup
+bootStartup() {
+    local serviceName=$1
+    if [[ "${release}" == "alpine" ]]; then
+        rc-update add "${serviceName}" default
+    else
+        systemctl daemon-reload
+        systemctl enable "${serviceName}"
     fi
 }
 
