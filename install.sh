@@ -41,6 +41,47 @@ checkCentosSELinux() {
         exit 0
     fi
 }
+
+# 检查Alpine AppArmor状态
+checkAlpineAppArmor() {
+    if [[ "${release}" == "alpine" ]]; then
+        # 检查AppArmor是否已安装
+        if command -v aa-status >/dev/null 2>&1; then
+            # 检查AppArmor状态
+            if aa-status --enabled >/dev/null 2>&1; then
+                echoContent green " ---> AppArmor已启用，这是Alpine推荐的安全模块"
+            else
+                echoContent yellow " ---> AppArmor已安装但未启用"
+                echoContent yellow " ---> 建议启用AppArmor以增强安全性"
+            fi
+        else
+            echoContent yellow " ---> AppArmor未安装，将在安装过程中自动安装"
+        fi
+    fi
+}
+
+# 检查Alpine sudo配置
+checkAlpineSudo() {
+    if [[ "${release}" == "alpine" ]]; then
+        # 检查sudo是否已安装
+        if ! command -v sudo >/dev/null 2>&1; then
+            echoContent yellow " ---> sudo未安装，将在依赖安装过程中自动安装和配置"
+            return
+        fi
+        
+        # 检查wheel组是否存在
+        if ! grep -q "^wheel:" /etc/group; then
+            echoContent yellow " ---> wheel组不存在，需要创建并配置sudo权限"
+        fi
+        
+        # 检查sudoers配置
+        if [[ -f "/etc/sudoers" ]] && ! grep -q "^%wheel.*ALL" /etc/sudoers; then
+            echoContent yellow " ---> sudoers配置需要更新以支持wheel组"
+        fi
+        
+        echoContent green " ---> Alpine sudo检查完成"
+    fi
+}
 checkSystem() {
     if [[ -n $(find /etc -name "redhat-release") ]] || grep </proc/version -q -i "centos"; then
         mkdir -p /etc/yum.repos.d
@@ -58,12 +99,32 @@ checkSystem() {
         removeType='yum -y remove'
         upgrade="yum update -y --skip-broken"
         checkCentosSELinux
-    elif { [[ -f "/etc/issue" ]] && grep -qi "Alpine" /etc/issue; } || { [[ -f "/proc/version" ]] && grep -qi "Alpine" /proc/version; }; then
+    elif { [[ -f "/etc/issue" ]] && grep -qi "Alpine" /etc/issue; } || { [[ -f "/proc/version" ]] && grep -qi "Alpine" /proc/version; } || { [[ -f "/etc/os-release" ]] && grep -qi "ID=alpine" /etc/os-release; }; then
         release="alpine"
         installType='apk add'
-        upgrade="apk update"
+        upgrade="apk update && apk upgrade"
         removeType='apk del'
         nginxConfigPath=/etc/nginx/http.d/
+        
+        # 检测Alpine版本
+        if [[ -f "/etc/os-release" ]]; then
+            alpineVersion=$(grep "VERSION_ID" /etc/os-release | cut -d'=' -f2 | tr -d '"' | cut -d'.' -f1,2)
+        elif [[ -f "/etc/alpine-release" ]]; then
+            alpineVersion=$(cat /etc/alpine-release | cut -d'.' -f1,2)
+        fi
+        
+        # Alpine 3.20特殊处理
+        if [[ "${alpineVersion}" == "3.20" ]] || [[ "${alpineVersion}" > "3.20" ]]; then
+            echoContent green " ---> 检测到Alpine ${alpineVersion}，启用增强兼容模式"
+            # 确保使用最新的apk包索引
+            upgrade="apk update --no-cache && apk upgrade --available"
+        fi
+        
+        # 检查AppArmor状态
+        checkAlpineAppArmor
+        
+        # 检查sudo配置
+        checkAlpineSudo
     elif { [[ -f "/etc/issue" ]] && grep -qi "debian" /etc/issue; } || { [[ -f "/proc/version" ]] && grep -qi "debian" /proc/version; } || { [[ -f "/etc/os-release" ]] && grep -qi "ID=debian" /etc/issue; }; then
         release="debian"
         installType='apt -y install'
@@ -333,6 +394,18 @@ initVar() {
     # 上次安装配置状态
     lastInstallationConfig=
 
+    # Alpine 3.20兼容性检查
+    if [[ "${release}" == "alpine" && -n "${alpineVersion}" ]]; then
+        if [[ "${alpineVersion}" == "3.20" ]] || [[ "${alpineVersion}" > "3.20" ]]; then
+            echoContent green " ---> Alpine ${alpineVersion} 兼容性检查完成"
+            # 确保必要的目录存在
+            mkdir -p /var/run >/dev/null 2>&1
+            # 检查OpenRC服务管理器
+            if ! command -v rc-service >/dev/null 2>&1; then
+                echoContent yellow " ---> 警告: Alpine ${alpineVersion} 需要 OpenRC 服务管理器"
+            fi
+        fi
+    fi
 }
 
 # 读取tls证书详情
@@ -738,6 +811,29 @@ allowPort() {
         if echo "${updateFirewalldStatus}" | grep -q "true"; then
             firewall-cmd --reload
         fi
+    elif [[ "${release}" == "alpine" ]]; then
+        # Alpine Linux 使用原生 iptables
+        local updateFirewalldStatus=
+        if ! iptables -L | grep -q "$1/${type}(mack-a)"; then
+            updateFirewalldStatus=true
+            iptables -I INPUT -p ${type} --dport "$1" -m comment --comment "allow $1/${type}(mack-a)" -j ACCEPT
+            if [[ "${type}" == "tcp" ]]; then
+                ip6tables -I INPUT -p tcp --dport "$1" -m comment --comment "allow $1/${type}(mack-a)" -j ACCEPT 2>/dev/null || true
+            elif [[ "${type}" == "udp" ]]; then
+                ip6tables -I INPUT -p udp --dport "$1" -m comment --comment "allow $1/${type}(mack-a)" -j ACCEPT 2>/dev/null || true
+            fi
+        fi
+
+        if echo "${updateFirewalldStatus}" | grep -q "true"; then
+            # 保存iptables规则 (Alpine方式)
+            if rc-service iptables status >/dev/null 2>&1; then
+                /etc/init.d/iptables save >/dev/null 2>&1 || true
+            fi
+            if rc-service ip6tables status >/dev/null 2>&1; then
+                /etc/init.d/ip6tables save >/dev/null 2>&1 || true
+            fi
+            echoContent green " ---> 端口 $1/${type} 开放成功 (Alpine)"
+        fi
     fi
 }
 # 获取公网IP
@@ -1102,11 +1198,16 @@ installTools() {
     fi
 
     if ! find /usr/bin /usr/sbin | grep -q -w netfilter-persistent; then
-        if [[ "${release}" != "centos" ]]; then
+        if [[ "${release}" == "ubuntu" ]] || [[ "${release}" == "debian" ]]; then
             echoContent green " ---> 安装iptables"
             echo "iptables-persistent iptables-persistent/autosave_v4 boolean true" | sudo debconf-set-selections
             echo "iptables-persistent iptables-persistent/autosave_v6 boolean true" | sudo debconf-set-selections
             ${installType} iptables-persistent >/dev/null 2>&1
+        elif [[ "${release}" == "alpine" ]]; then
+            echoContent green " ---> 配置iptables（Alpine）"
+            ${installType} iptables ip6tables iptables-openrc >/dev/null 2>&1
+            rc-update add iptables boot >/dev/null 2>&1
+            rc-update add ip6tables boot >/dev/null 2>&1
         fi
     fi
 
@@ -1134,6 +1235,8 @@ installTools() {
         echoContent green " ---> 安装crontabs"
         if [[ "${release}" == "ubuntu" ]] || [[ "${release}" == "debian" ]]; then
             ${installType} cron >/dev/null 2>&1
+        elif [[ "${release}" == "alpine" ]]; then
+            ${installType} dcron >/dev/null 2>&1
         else
             ${installType} crontabs >/dev/null 2>&1
         fi
@@ -1155,7 +1258,11 @@ installTools() {
 
     if ! find /usr/bin /usr/sbin | grep -q -w ping6; then
         echoContent green " ---> 安装ping6"
-        ${installType} inetutils-ping >/dev/null 2>&1
+        if [[ "${release}" == "alpine" ]]; then
+            ${installType} iputils >/dev/null 2>&1
+        else
+            ${installType} inetutils-ping >/dev/null 2>&1
+        fi
     fi
 
     if ! find /usr/bin /usr/sbin | grep -q -w qrencode; then
@@ -1166,11 +1273,42 @@ installTools() {
     if ! find /usr/bin /usr/sbin | grep -q -w sudo; then
         echoContent green " ---> 安装sudo"
         ${installType} sudo >/dev/null 2>&1
+        
+        # Alpine Linux sudo 配置
+        if [[ "${release}" == "alpine" ]]; then
+            echoContent green " ---> 配置sudo权限（Alpine）"
+            # 确保 wheel 组存在
+            if ! grep -q "^wheel:" /etc/group; then
+                addgroup wheel >/dev/null 2>&1
+            fi
+            
+            # 配置 sudoers 文件，允许 wheel 组用户使用 sudo
+            if [[ -f "/etc/sudoers" ]] && ! grep -q "^%wheel ALL=(ALL) ALL" /etc/sudoers; then
+                echo "%wheel ALL=(ALL) ALL" >> /etc/sudoers
+            fi
+            
+            # 确保当前用户在 wheel 组中
+            if [[ -n "${USER}" ]] && [[ "${USER}" != "root" ]]; then
+                adduser "${USER}" wheel >/dev/null 2>&1
+            fi
+            
+            # 验证 sudo 安装和配置
+            if command -v sudo >/dev/null 2>&1; then
+                echoContent green " ---> sudo 安装和配置完成"
+            else
+                echoContent red " ---> sudo 安装失败，请手动检查"
+            fi
+        fi
     fi
 
     if ! find /usr/bin /usr/sbin | grep -q -w lsb-release; then
         echoContent green " ---> 安装lsb-release"
-        ${installType} lsb-release >/dev/null 2>&1
+        if [[ "${release}" == "alpine" ]]; then
+            # Alpine上lsb-release包名不同，或者使用替代方案
+            ${installType} lsb-release-minimal >/dev/null 2>&1 || ${installType} alpine-release >/dev/null 2>&1
+        else
+            ${installType} lsb-release >/dev/null 2>&1
+        fi
     fi
 
     if ! find /usr/bin /usr/sbin | grep -q -w lsof; then
@@ -1186,6 +1324,26 @@ installTools() {
             ${installType} bind-utils >/dev/null 2>&1
         elif echo "${installType}" | grep -qw "apk"; then
             ${installType} bind-tools >/dev/null 2>&1
+        fi
+    fi
+
+    # Alpine 3.20特殊包处理
+    if [[ "${release}" == "alpine" ]]; then
+        # 确保ca-certificates是最新的
+        if [[ -n "${alpineVersion}" ]] && [[ "${alpineVersion}" == "3.20" ]] || [[ "${alpineVersion}" > "3.20" ]]; then
+            echoContent green " ---> Alpine ${alpineVersion} 特殊包处理"
+            ${installType} ca-certificates-bundle >/dev/null 2>&1
+            # 更新apk缓存以确保包索引是最新的
+            apk update --no-cache >/dev/null 2>&1
+        fi
+        
+        # 确保基础工具包可用
+        if ! find /usr/bin /usr/sbin | grep -q -w bash; then
+            ${installType} bash >/dev/null 2>&1
+        fi
+        
+        if ! find /usr/bin /usr/sbin | grep -q -w shadow; then
+            ${installType} shadow >/dev/null 2>&1
         fi
     fi
 
@@ -1214,21 +1372,30 @@ installTools() {
     fi
 
     if ! find /usr/bin /usr/sbin | grep -q -w semanage; then
-        echoContent green " ---> 安装semanage"
-        ${installType} bash-completion >/dev/null 2>&1
+        if [[ "${release}" == "alpine" ]]; then
+            echoContent green " ---> 安装AppArmor安全模块（Alpine推荐）"
+            ${installType} apparmor apparmor-utils >/dev/null 2>&1
+            # 启用AppArmor服务
+            if [[ -n "${alpineVersion}" ]] && [[ "${alpineVersion}" == "3.20" ]] || [[ "${alpineVersion}" > "3.20" ]]; then
+                rc-update add apparmor boot >/dev/null 2>&1
+                echoContent green " ---> AppArmor服务已配置为开机启动"
+            fi
+        else
+            echoContent green " ---> 安装semanage"
+            ${installType} bash-completion >/dev/null 2>&1
 
-        if [[ "${centosVersion}" == "7" ]]; then
-            policyCoreUtils="policycoreutils-python.x86_64"
-        elif [[ "${centosVersion}" == "8" ]]; then
-            policyCoreUtils="policycoreutils-python-utils-2.9-9.el8.noarch"
-        fi
+            if [[ "${centosVersion}" == "7" ]]; then
+                policyCoreUtils="policycoreutils-python.x86_64"
+            elif [[ "${centosVersion}" == "8" ]]; then
+                policyCoreUtils="policycoreutils-python-utils-2.9-9.el8.noarch"
+            fi
 
-        if [[ -n "${policyCoreUtils}" ]]; then
-            ${installType} ${policyCoreUtils} >/dev/null 2>&1
-        fi
-        if [[ -n $(which semanage) ]]; then
-            semanage port -a -t http_port_t -p tcp 31300
-
+            if [[ -n "${policyCoreUtils}" ]]; then
+                ${installType} ${policyCoreUtils} >/dev/null 2>&1
+            fi
+            if [[ -n $(which semanage) ]]; then
+                semanage port -a -t http_port_t -p tcp 31300
+            fi
         fi
     fi
     if [[ "${selectCustomInstallType}" == "7" ]]; then
@@ -1304,7 +1471,16 @@ module_hotfixes=true
 EOF
         sudo yum-config-manager --enable nginx-mainline >/dev/null 2>&1
     elif [[ "${release}" == "alpine" ]]; then
-        rm "${nginxConfigPath}default.conf"
+        # Alpine 3.20特殊处理
+        if [[ -n "${alpineVersion}" ]] && [[ "${alpineVersion}" == "3.20" ]] || [[ "${alpineVersion}" > "3.20" ]]; then
+            echoContent green " ---> 配置Alpine ${alpineVersion} Nginx源"
+            # 确保使用community仓库获取最新版本的nginx
+            echo "http://dl-cdn.alpinelinux.org/alpine/v${alpineVersion}/community" >> /etc/apk/repositories
+            apk update --no-cache >/dev/null 2>&1
+        fi
+        
+        # 删除默认配置文件
+        rm -f "${nginxConfigPath}default.conf" >/dev/null 2>&1
     fi
     ${installType} nginx >/dev/null 2>&1
     bootStartup nginx
@@ -1317,7 +1493,11 @@ installWarp() {
         exit 0
     fi
 
-    ${installType} gnupg2 -y >/dev/null 2>&1
+    if [[ "${release}" == "alpine" ]]; then
+        ${installType} gnupg >/dev/null 2>&1
+    else
+        ${installType} gnupg2 -y >/dev/null 2>&1
+    fi
     if [[ "${release}" == "debian" ]]; then
         curl -s https://pkg.cloudflareclient.com/pubkey.gpg | sudo apt-key add - >/dev/null 2>&1
         echo "deb http://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list >/dev/null 2>&1
@@ -1331,6 +1511,12 @@ installWarp() {
     elif [[ "${release}" == "centos" ]]; then
         ${installType} yum-utils >/dev/null 2>&1
         sudo rpm -ivh "http://pkg.cloudflareclient.com/cloudflare-release-el${centosVersion}.rpm" >/dev/null 2>&1
+        
+    elif [[ "${release}" == "alpine" ]]; then
+        echoContent red " ---> WARP客户端暂不支持Alpine Linux"
+        echoContent yellow " ---> 建议使用warp-reg工具替代WARP客户端"
+        echoContent yellow " ---> 或考虑使用其他系统运行WARP"
+        return 1
     fi
 
     echoContent green " ---> 安装WARP"
@@ -1339,7 +1525,14 @@ installWarp() {
         echoContent red " ---> 安装WARP失败"
         exit 0
     fi
-    systemctl enable warp-svc
+    
+    # 启用WARP服务
+    if [[ "${release}" == "alpine" ]]; then
+        # Alpine使用OpenRC - 但由于WARP不支持Alpine，这段代码不会执行
+        rc-update add warp-svc default >/dev/null 2>&1
+    else
+        systemctl enable warp-svc
+    fi
     warp-cli --accept-tos register
     warp-cli --accept-tos set-mode proxy
     warp-cli --accept-tos set-proxy-port 31303
@@ -2124,9 +2317,34 @@ nginxBlog() {
 # 修改http_port_t端口
 updateSELinuxHTTPPortT() {
 
-    $(find /usr/bin /usr/sbin | grep -w journalctl) -xe >/etc/v2ray-agent/nginx_error.log 2>&1
+    if [[ "${release}" == "alpine" ]]; then
+        # Alpine没有journalctl，使用dmesg或/var/log/messages
+        if [[ -f "/var/log/messages" ]]; then
+            tail -n 50 /var/log/messages >/etc/v2ray-agent/nginx_error.log 2>&1
+        else
+            dmesg | tail -n 50 >/etc/v2ray-agent/nginx_error.log 2>&1
+        fi
+    else
+        $(find /usr/bin /usr/sbin | grep -w journalctl) -xe >/etc/v2ray-agent/nginx_error.log 2>&1
+    fi
 
-    if find /usr/bin /usr/sbin | grep -q -w semanage && find /usr/bin /usr/sbin | grep -q -w getenforce && grep -E "31300|31302" </etc/v2ray-agent/nginx_error.log | grep -q "Permission denied"; then
+    if [[ "${release}" == "alpine" ]]; then
+        # Alpine使用AppArmor而不是SELinux
+        if grep -E "31300|31302" </etc/v2ray-agent/nginx_error.log | grep -q "Permission denied"; then
+            echoContent red " ---> 检查AppArmor配置"
+            if command -v aa-status >/dev/null 2>&1; then
+                echoContent green " ---> 检测到AppArmor，尝试调整nginx配置"
+                # 检查并重新加载AppArmor配置
+                if [[ -f "/etc/apparmor.d/usr.sbin.nginx" ]]; then
+                    apparmor_parser -r /etc/apparmor.d/usr.sbin.nginx >/dev/null 2>&1
+                    echoContent green " ---> AppArmor nginx配置已重新加载"
+                fi
+            else
+                echoContent yellow " ---> AppArmor未安装或未启动，权限限制可能来自其他源"
+            fi
+        fi
+        handleNginx start
+    elif find /usr/bin /usr/sbin | grep -q -w semanage && find /usr/bin /usr/sbin | grep -q -w getenforce && grep -E "31300|31302" </etc/v2ray-agent/nginx_error.log | grep -q "Permission denied"; then
         echoContent red " ---> 检查SELinux端口是否开放"
         if ! $(find /usr/bin /usr/sbin | grep -w semanage) port -l | grep http_port | grep -q 31300; then
             $(find /usr/bin /usr/sbin | grep -w semanage) port -a -t http_port_t -p tcp 31300
@@ -2763,6 +2981,15 @@ EOF
 # 安装alpine开机启动
 installAlpineStartup() {
     local serviceName=$1
+    
+    # 检查并安装openrc如果不存在 (Alpine 3.20+需要)
+    if [[ -n "${alpineVersion}" ]] && [[ "${alpineVersion}" == "3.20" ]] || [[ "${alpineVersion}" > "3.20" ]]; then
+        if ! find /sbin /usr/sbin | grep -q -w openrc; then
+            echoContent green " ---> 安装OpenRC (Alpine ${alpineVersion})"
+            ${installType} openrc >/dev/null 2>&1
+        fi
+    fi
+    
     if [[ "${serviceName}" == "sing-box" ]]; then
         cat <<EOF >"/etc/init.d/${serviceName}"
 #!/sbin/openrc-run
@@ -2772,6 +2999,16 @@ command="/etc/v2ray-agent/sing-box/sing-box"
 command_args="run -c /etc/v2ray-agent/sing-box/conf/config.json"
 command_background=true
 pidfile="/var/run/sing-box.pid"
+command_user="root"
+
+depend() {
+    need net
+    after firewall
+}
+
+start_pre() {
+    checkpath --directory --owner root:root --mode 0755 /var/run
+}
 EOF
     elif [[ "${serviceName}" == "xray" ]]; then
         cat <<EOF >"/etc/init.d/${serviceName}"
@@ -2782,10 +3019,27 @@ command="/etc/v2ray-agent/xray/xray"
 command_args="run -confdir /etc/v2ray-agent/xray/conf"
 command_background=true
 pidfile="/var/run/xray.pid"
+command_user="root"
+
+depend() {
+    need net
+    after firewall
+}
+
+start_pre() {
+    checkpath --directory --owner root:root --mode 0755 /var/run
+}
 EOF
     fi
 
     chmod +x "/etc/init.d/${serviceName}"
+    
+    # Alpine 3.20+的额外配置
+    if [[ -n "${alpineVersion}" ]] && [[ "${alpineVersion}" == "3.20" ]] || [[ "${alpineVersion}" > "3.20" ]]; then
+        # 确保服务在正确的运行级别
+        rc-update add "${serviceName}" default >/dev/null 2>&1
+        echoContent green " ---> Alpine ${alpineVersion} ${serviceName} 服务配置完成"
+    fi
 }
 
 # sing-box开机自启
@@ -6583,6 +6837,16 @@ updateV2RayAgent() {
 
 # 防火墙
 handleFirewall() {
+    if [[ "${release}" == "alpine" ]]; then
+        # Alpine Linux 使用不同的防火墙管理方式
+        if rc-service iptables status 2>/dev/null | grep -q "started" && [[ "$1" == "stop" ]]; then
+            rc-service iptables stop >/dev/null 2>&1
+            rc-update del iptables >/dev/null 2>&1
+            echoContent green " ---> iptables关闭成功"
+        fi
+        return
+    fi
+
     if systemctl status ufw 2>/dev/null | grep -q "active (exited)" && [[ "$1" == "stop" ]]; then
         systemctl stop ufw >/dev/null 2>&1
         systemctl disable ufw >/dev/null 2>&1
