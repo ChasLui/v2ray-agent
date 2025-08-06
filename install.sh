@@ -7019,7 +7019,7 @@ installAlpineBBR() {
     # 安装必要的包
     echoContent green "安装必要的系统包..."
     apk update
-    apk add --no-cache linux-firmware linux-headers build-base
+    apk add --no-cache linux-firmware linux-headers build-base iproute2
     
     # 检查当前内核版本
     local currentKernel=$(uname -r)
@@ -7140,10 +7140,10 @@ upgradeAlpineKernel() {
     # 安装最新内核
     if [[ -n "${alpineVersion}" ]] && [[ "${alpineVersion}" == "3.20" ]] || [[ "${alpineVersion}" > "3.20" ]]; then
         echoContent green "安装Alpine ${alpineVersion} 最新内核..."
-        apk add --no-cache linux-lts linux-lts-headers
+        apk add --no-cache linux-lts linux-lts-headers iproute2
     else
         echoContent green "安装最新稳定内核..."
-        apk add --no-cache linux-virt linux-virt-headers
+        apk add --no-cache linux-virt linux-virt-headers iproute2
     fi
     
     # 检查内核是否安装成功

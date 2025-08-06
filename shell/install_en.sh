@@ -5578,7 +5578,7 @@ installAlpineBBR() {
     # Install necessary packages
     echoContent green "Installing necessary system packages..."
     apk update
-    apk add --no-cache linux-firmware linux-headers build-base
+    apk add --no-cache linux-firmware linux-headers build-base iproute2
     
     # Check current kernel version
     local currentKernel=$(uname -r)
@@ -5699,10 +5699,10 @@ upgradeAlpineKernel() {
     # Install latest kernel
     if [[ -n "${alpineVersion}" ]] && [[ "${alpineVersion}" == "3.20" ]] || [[ "${alpineVersion}" > "3.20" ]]; then
         echoContent green "Installing Alpine ${alpineVersion} latest kernel..."
-        apk add --no-cache linux-lts linux-lts-headers
+        apk add --no-cache linux-lts linux-lts-headers iproute2
     else
         echoContent green "Installing latest stable kernel..."
-        apk add --no-cache linux-virt linux-virt-headers
+        apk add --no-cache linux-virt linux-virt-headers iproute2
     fi
     
     # Check if kernel installation was successful
