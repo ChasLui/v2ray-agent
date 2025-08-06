@@ -2990,6 +2990,32 @@ installAlpineStartup() {
         fi
     fi
     
+    # 修复Alpine 3.20+的/var/run目录问题
+    if [[ -n "${alpineVersion}" ]] && [[ "${alpineVersion}" == "3.20" ]] || [[ "${alpineVersion}" > "3.20" ]]; then
+        echoContent green " ---> 修复Alpine ${alpineVersion} /var/run目录问题"
+        
+        # 检查/var/run是否为符号链接
+        if [[ -L "/var/run" ]]; then
+            echoContent yellow " ---> 检测到/var/run为符号链接，正在修复..."
+            # 备份原始链接
+            cp -P /var/run /var/run.backup 2>/dev/null || true
+            
+            # 删除符号链接并创建真实目录
+            rm -f /var/run
+            mkdir -p /var/run
+            chmod 755 /var/run
+            chown root:root /var/run
+            
+            echoContent green " ---> /var/run目录修复完成"
+        fi
+        
+        # 确保必要的目录存在
+        mkdir -p /var/run/xray 2>/dev/null || true
+        mkdir -p /var/run/sing-box 2>/dev/null || true
+        chmod 755 /var/run/xray 2>/dev/null || true
+        chmod 755 /var/run/sing-box 2>/dev/null || true
+    fi
+    
     if [[ "${serviceName}" == "sing-box" ]]; then
         cat <<EOF >"/etc/init.d/${serviceName}"
 #!/sbin/openrc-run
@@ -3007,7 +3033,15 @@ depend() {
 }
 
 start_pre() {
-    checkpath --directory --owner root:root --mode 0755 /var/run
+    # 修复Alpine 3.20+的checkpath问题
+    if [[ -n "${alpineVersion}" ]] && [[ "${alpineVersion}" == "3.20" ]] || [[ "${alpineVersion}" > "3.20" ]]; then
+        # 直接创建目录而不使用checkpath
+        mkdir -p /var/run
+        chmod 755 /var/run
+        chown root:root /var/run
+    else
+        checkpath --directory --owner root:root --mode 0755 /var/run
+    fi
 }
 EOF
     elif [[ "${serviceName}" == "xray" ]]; then
@@ -3027,7 +3061,15 @@ depend() {
 }
 
 start_pre() {
-    checkpath --directory --owner root:root --mode 0755 /var/run
+    # 修复Alpine 3.20+的checkpath问题
+    if [[ -n "${alpineVersion}" ]] && [[ "${alpineVersion}" == "3.20" ]] || [[ "${alpineVersion}" > "3.20" ]]; then
+        # 直接创建目录而不使用checkpath
+        mkdir -p /var/run
+        chmod 755 /var/run
+        chown root:root /var/run
+    else
+        checkpath --directory --owner root:root --mode 0755 /var/run
+    fi
 }
 EOF
     fi
@@ -3038,6 +3080,10 @@ EOF
     if [[ -n "${alpineVersion}" ]] && [[ "${alpineVersion}" == "3.20" ]] || [[ "${alpineVersion}" > "3.20" ]]; then
         # 确保服务在正确的运行级别
         rc-update add "${serviceName}" default >/dev/null 2>&1
+        
+        # 重新加载OpenRC配置
+        rc-update show >/dev/null 2>&1
+        
         echoContent green " ---> Alpine ${alpineVersion} ${serviceName} 服务配置完成"
     fi
 }
@@ -3192,7 +3238,32 @@ handleSingBox() {
     elif [[ -f "/etc/init.d/sing-box" ]]; then
         if [[ -z $(pgrep -f "sing-box") ]] && [[ "$1" == "start" ]]; then
             singBoxMergeConfig
-            rc-service sing-box start
+            # Alpine Linux特殊处理
+            if [[ "${release}" == "alpine" ]]; then
+                # 确保/var/run目录正确
+                if [[ -L "/var/run" ]]; then
+                    echoContent yellow " ---> 检测到/var/run符号链接问题，正在修复..."
+                    rm -f /var/run
+                    mkdir -p /var/run
+                    chmod 755 /var/run
+                    chown root:root /var/run
+                fi
+                
+                # 重新加载OpenRC配置
+                rc-update show >/dev/null 2>&1
+                
+                # 尝试启动服务
+                rc-service sing-box start 2>/etc/v2ray-agent/singbox_error.log
+                
+                # 如果启动失败，尝试手动启动
+                if [[ $? -ne 0 ]]; then
+                    echoContent yellow " ---> OpenRC启动失败，尝试手动启动..."
+                    /etc/v2ray-agent/sing-box/sing-box run -c /etc/v2ray-agent/sing-box/conf/config.json &
+                    sleep 2
+                fi
+            else
+                rc-service sing-box start
+            fi
         elif [[ -n $(pgrep -f "sing-box") ]] && [[ "$1" == "stop" ]]; then
             rc-service sing-box stop
         fi
@@ -3204,6 +3275,10 @@ handleSingBox() {
             echoContent green " ---> sing-box启动成功"
         else
             echoContent red "sing-box启动失败"
+            if [[ "${release}" == "alpine" ]] && [[ -f "/etc/v2ray-agent/singbox_error.log" ]]; then
+                echoContent red " ---> Alpine错误日志:"
+                tail -n 10 /etc/v2ray-agent/singbox_error.log
+            fi
             echoContent yellow "请手动执行【 /etc/v2ray-agent/sing-box/sing-box merge config.json -C /etc/v2ray-agent/sing-box/conf/config/ -D /etc/v2ray-agent/sing-box/conf/ 】，查看错误日志"
             echo
             echoContent yellow "如上面命令没有错误，请手动执行【 /etc/v2ray-agent/sing-box/sing-box run -c /etc/v2ray-agent/sing-box/conf/config.json 】，查看错误日志"
@@ -3230,7 +3305,32 @@ handleXray() {
         fi
     elif [[ -f "/etc/init.d/xray" ]]; then
         if [[ -z $(pgrep -f "xray/xray") ]] && [[ "$1" == "start" ]]; then
-            rc-service xray start
+            # Alpine Linux特殊处理
+            if [[ "${release}" == "alpine" ]]; then
+                # 确保/var/run目录正确
+                if [[ -L "/var/run" ]]; then
+                    echoContent yellow " ---> 检测到/var/run符号链接问题，正在修复..."
+                    rm -f /var/run
+                    mkdir -p /var/run
+                    chmod 755 /var/run
+                    chown root:root /var/run
+                fi
+                
+                # 重新加载OpenRC配置
+                rc-update show >/dev/null 2>&1
+                
+                # 尝试启动服务
+                rc-service xray start 2>/etc/v2ray-agent/xray_error.log
+                
+                # 如果启动失败，尝试手动启动
+                if [[ $? -ne 0 ]]; then
+                    echoContent yellow " ---> OpenRC启动失败，尝试手动启动..."
+                    /etc/v2ray-agent/xray/xray run -confdir /etc/v2ray-agent/xray/conf &
+                    sleep 2
+                fi
+            else
+                rc-service xray start
+            fi
         elif [[ -n $(pgrep -f "xray/xray") ]] && [[ "$1" == "stop" ]]; then
             rc-service xray stop
         fi
@@ -3243,6 +3343,10 @@ handleXray() {
             echoContent green " ---> Xray启动成功"
         else
             echoContent red "Xray启动失败"
+            if [[ "${release}" == "alpine" ]] && [[ -f "/etc/v2ray-agent/xray_error.log" ]]; then
+                echoContent red " ---> Alpine错误日志:"
+                tail -n 10 /etc/v2ray-agent/xray_error.log
+            fi
             echoContent red "请手动执行以下的命令后【/etc/v2ray-agent/xray/xray -confdir /etc/v2ray-agent/xray/conf】将错误日志进行反馈"
             exit 0
         fi
