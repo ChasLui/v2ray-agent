@@ -3,7 +3,7 @@
 - [感谢 JetBrains 提供的非商业开源软件开发授权](https://www.jetbrains.com/?from=v2ray-agent)
 - [Thanks for non-commercial open source development authorization by JetBrains](https://www.jetbrains.com/?from=v2ray-agent)
 
-- [English Version](https://github.com/mack-a/v2ray-agent/blob/master/documents/en/README_EN.md)
+- [English Version](https://github.com/chaslui/v2ray-agent/blob/master/documents/en/README_EN.md)
 - [VPS选购攻略，避坑指南](https://www.592083.xyz/archives/1679975663984)
 - [TG频道](https://t.me/v2rayAgentChannel)、[TG群组](https://t.me/technologyshare)、[官方网站](https://www.592083.xyz/)
 - [RackNerd低价AS4837套餐，年付10美起](https://www.592083.xyz/archives/racknerdtao-can-zheng-li-nian-fu-10mei-yuan)
@@ -91,7 +91,7 @@ wget -P /root -N --no-check-certificate "https://www.592083.xyz/v2ray-agent/inst
 
 # 五、反馈和建议
 
-- 提交[issue](https://github.com/mack-a/v2ray-agent/issues)、[加入](https://t.me/technologyshare)群聊
+- 提交[issue](https://github.com/chaslui/v2ray-agent/issues)、[加入](https://t.me/technologyshare)群聊
 
 # 六、捐赠
 
@@ -103,4 +103,4 @@ wget -P /root -N --no-check-certificate "https://www.592083.xyz/v2ray-agent/inst
 
 # 七、许可证
 
-[AGPL-3.0](https://github.com/mack-a/v2ray-agent/blob/master/LICENSE)
+[AGPL-3.0](https://github.com/chaslui/v2ray-agent/blob/master/LICENSE)

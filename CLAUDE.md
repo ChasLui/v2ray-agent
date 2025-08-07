@@ -14,7 +14,7 @@ This is a Bash shell script project for automated installation and management of
 ./install.sh
 
 # Alternative downloads:
-wget -P /root -N --no-check-certificate "https://raw.githubusercontent.com/mack-a/v2ray-agent/master/install.sh" && chmod 700 /root/install.sh && /root/install.sh
+wget -P /root -N --no-check-certificate "https://raw.githubusercontent.com/chaslui/v2ray-agent/master/install.sh" && chmod 700 /root/install.sh && /root/install.sh
 ```
 
 ### Quick Access
