@@ -24,8 +24,7 @@
         "server": "1.1.1.1",
         "server_port": 443,
         "path": "/dns-query",
-        "domain_resolver": "dns_resolver",
-        "strategy": "prefer_ipv4"
+        "domain_resolver": "dns_resolver"
       },
       {
         "tag": "dns_direct",
@@ -33,42 +32,49 @@
         "server": "dns.alidns.com",
         "server_port": 443,
         "path": "/dns-query",
-        "domain_resolver": "dns_resolver",
-        "strategy": "prefer_ipv4"
+        "domain_resolver": "dns_resolver"
       },
       {
         "tag": "google",
         "type": "tls",
         "server": "8.8.4.4",
-        "domain_resolver": "dns_resolver",
-        "strategy": "prefer_ipv4"
+        "domain_resolver": "dns_resolver"
       },
       {
         "tag": "dns_resolver",
-        "address": "114.114.114.114",
-        "strategy": "prefer_ipv4"
+        "address": "114.114.114.114"
       }
     ],
     "rules": [
       {
+        "action": "route",
         "clash_mode": "direct",
-        "server": "dns_direct"
+        "server": "dns_direct",
+        "strategy": "prefer_ipv4"
       },
       {
+        "action": "route",
         "clash_mode": "global",
-        "server": "dns_proxy"
+        "server": "dns_proxy",
+        "strategy": "prefer_ipv4"
       },
       {
+        "action": "route",
         "rule_set": "geosite-cn",
-        "server": "dns_direct"
+        "server": "dns_direct",
+        "strategy": "prefer_ipv4"
       },
       {
+        "action": "route",
         "rule_set": "geoip-cn",
-        "server": "dns_direct"
+        "server": "dns_direct",
+        "strategy": "prefer_ipv4"
       },
       {
+        "action": "route",
         "rule_set": "geosite-geolocation-!cn",
-        "server": "dns_proxy"
+        "server": "dns_proxy",
+        "strategy": "prefer_ipv4"
       }
     ],
     "independent_cache": true,
