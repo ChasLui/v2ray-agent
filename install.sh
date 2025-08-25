@@ -3017,7 +3017,7 @@ installAlpineStartup() {
     fi
     
     if [[ "${serviceName}" == "sing-box" ]]; then
-        cat <<EOF >"/etc/init.d/${serviceName}"
+        cat <<'EOF' >"/etc/init.d/${serviceName}"
 #!/sbin/openrc-run
 
 name="sing-box"
@@ -3041,23 +3041,14 @@ depend() {
 }
 
 start_pre() {
-    # 修复Alpine 3.20+的checkpath问题
-    if [[ -n "${alpineVersion}" ]] && [[ "${alpineVersion}" == "3.20" ]] || [[ "${alpineVersion}" > "3.20" ]]; then
-        mkdir -p /run
-        chmod 755 /run
-        chown root:root /run
-    else
-        checkpath --directory --owner root:root --mode 0755 /run
-    fi
-    # 确保日志文件存在
-    mkdir -p /var/log
-    : > "${output_log}"
-    : > "${error_log}"
-    chmod 0644 "${output_log}" "${error_log}"
+    checkpath -d -m 0755 /run
+    checkpath -d -m 0755 /var/log
+    checkpath -f -m 0644 "${output_log}"
+    checkpath -f -m 0644 "${error_log}"
 }
 EOF
     elif [[ "${serviceName}" == "xray" ]]; then
-        cat <<EOF >"/etc/init.d/${serviceName}"
+        cat <<'EOF' >"/etc/init.d/${serviceName}"
 #!/sbin/openrc-run
 
 name="xray"
@@ -3081,19 +3072,10 @@ depend() {
 }
 
 start_pre() {
-    # 修复Alpine 3.20+的checkpath问题
-    if [[ -n "${alpineVersion}" ]] && [[ "${alpineVersion}" == "3.20" ]] || [[ "${alpineVersion}" > "3.20" ]]; then
-        mkdir -p /run
-        chmod 755 /run
-        chown root:root /run
-    else
-        checkpath --directory --owner root:root --mode 0755 /run
-    fi
-    # 确保日志文件存在
-    mkdir -p /var/log
-    : > "${output_log}"
-    : > "${error_log}"
-    chmod 0644 "${output_log}" "${error_log}"
+    checkpath -d -m 0755 /run
+    checkpath -d -m 0755 /var/log
+    checkpath -f -m 0644 "${output_log}"
+    checkpath -f -m 0644 "${error_log}"
 }
 EOF
     fi
