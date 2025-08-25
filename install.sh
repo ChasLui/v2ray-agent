@@ -2707,9 +2707,9 @@ v2rayVersionManageMenu() {
         handleV2Ray start
     elif [[ "${selectV2RayType}" == "5" ]]; then
         reloadCore
-    elif [[ "${selectXrayType}" == "6" ]]; then
+    elif [[ "${selectV2RayType}" == "6" ]]; then
         updateGeoSite
-    elif [[ "${selectXrayType}" == "7" ]]; then
+    elif [[ "${selectV2RayType}" == "7" ]]; then
         installCronUpdateGeo
     fi
 }
@@ -3158,12 +3158,21 @@ EOF
 
 # 操作Hysteria
 handleHysteria() {
+    # 检查Hysteria是否已经在运行
+    local hysteriaRunning=false
+    if [[ -n $(pgrep -f "hysteria/hysteria") ]]; then
+        hysteriaRunning=true
+    fi
+    
     # shellcheck disable=SC2010
     if find /bin /usr/bin | grep -q systemctl && ls /etc/systemd/system/ | grep -q hysteria.service; then
-        if [[ -z $(pgrep -f "hysteria/hysteria") ]] && [[ "$1" == "start" ]]; then
+        if [[ "$hysteriaRunning" == "false" ]] && [[ "$1" == "start" ]]; then
             systemctl start hysteria.service
-        elif [[ -n $(pgrep -f "hysteria/hysteria") ]] && [[ "$1" == "stop" ]]; then
+        elif [[ "$hysteriaRunning" == "true" ]] && [[ "$1" == "stop" ]]; then
             systemctl stop hysteria.service
+        elif [[ "$hysteriaRunning" == "true" ]] && [[ "$1" == "start" ]]; then
+            echoContent yellow " ---> Hysteria已经在运行中，跳过启动"
+            return 0
         fi
     fi
     sleep 0.8
@@ -3189,20 +3198,32 @@ handleHysteria() {
 
 # 操作Tuic
 handleTuic() {
+    # 检查Tuic是否已经在运行
+    local tuicRunning=false
+    if [[ -n $(pgrep -f "tuic/tuic") ]]; then
+        tuicRunning=true
+    fi
+    
     # shellcheck disable=SC2010
     if find /bin /usr/bin | grep -q systemctl && ls /etc/systemd/system/ | grep -q tuic.service; then
-        if [[ -z $(pgrep -f "tuic/tuic") ]] && [[ "$1" == "start" ]]; then
+        if [[ "$tuicRunning" == "false" ]] && [[ "$1" == "start" ]]; then
             singBoxMergeConfig
             systemctl start tuic.service
-        elif [[ -n $(pgrep -f "tuic/tuic") ]] && [[ "$1" == "stop" ]]; then
+        elif [[ "$tuicRunning" == "true" ]] && [[ "$1" == "stop" ]]; then
             systemctl stop tuic.service
+        elif [[ "$tuicRunning" == "true" ]] && [[ "$1" == "start" ]]; then
+            echoContent yellow " ---> Tuic已经在运行中，跳过启动"
+            return 0
         fi
     elif [[ -f "/etc/init.d/tuic" ]]; then
-        if [[ -z $(pgrep -f "tuic/tuic") ]] && [[ "$1" == "start" ]]; then
+        if [[ "$tuicRunning" == "false" ]] && [[ "$1" == "start" ]]; then
             singBoxMergeConfig
             rc-service tuic start
-        elif [[ -n $(pgrep -f "tuic/tuic") ]] && [[ "$1" == "stop" ]]; then
+        elif [[ "$tuicRunning" == "true" ]] && [[ "$1" == "stop" ]]; then
             rc-service tuic stop
+        elif [[ "$tuicRunning" == "true" ]] && [[ "$1" == "start" ]]; then
+            echoContent yellow " ---> Tuic已经在运行中，跳过启动"
+            return 0
         fi
     fi
     sleep 0.8
@@ -3228,15 +3249,24 @@ handleTuic() {
 
 # 操作sing-box
 handleSingBox() {
+    # 检查sing-box是否已经在运行
+    local singBoxRunning=false
+    if [[ -n $(pgrep -f "sing-box") ]]; then
+        singBoxRunning=true
+    fi
+    
     if [[ -f "/etc/systemd/system/sing-box.service" ]]; then
-        if [[ -z $(pgrep -f "sing-box") ]] && [[ "$1" == "start" ]]; then
+        if [[ "$singBoxRunning" == "false" ]] && [[ "$1" == "start" ]]; then
             singBoxMergeConfig
             systemctl start sing-box.service
-        elif [[ -n $(pgrep -f "sing-box") ]] && [[ "$1" == "stop" ]]; then
+        elif [[ "$singBoxRunning" == "true" ]] && [[ "$1" == "stop" ]]; then
             systemctl stop sing-box.service
+        elif [[ "$singBoxRunning" == "true" ]] && [[ "$1" == "start" ]]; then
+            echoContent yellow " ---> sing-box已经在运行中，跳过启动"
+            return 0
         fi
     elif [[ -f "/etc/init.d/sing-box" ]]; then
-        if [[ -z $(pgrep -f "sing-box") ]] && [[ "$1" == "start" ]]; then
+        if [[ "$singBoxRunning" == "false" ]] && [[ "$1" == "start" ]]; then
             singBoxMergeConfig
             # Alpine Linux特殊处理
             if [[ "${release}" == "alpine" ]]; then
@@ -3264,8 +3294,11 @@ handleSingBox() {
             else
                 rc-service sing-box start
             fi
-        elif [[ -n $(pgrep -f "sing-box") ]] && [[ "$1" == "stop" ]]; then
+        elif [[ "$singBoxRunning" == "true" ]] && [[ "$1" == "stop" ]]; then
             rc-service sing-box stop
+        elif [[ "$singBoxRunning" == "true" ]] && [[ "$1" == "start" ]]; then
+            echoContent yellow " ---> sing-box已经在运行中，跳过启动"
+            return 0
         fi
     fi
     sleep 1
@@ -3297,14 +3330,23 @@ handleSingBox() {
 
 # 操作xray
 handleXray() {
+    # 检查Xray是否已经在运行
+    local xrayRunning=false
+    if [[ -n $(pgrep -f "xray/xray") ]]; then
+        xrayRunning=true
+    fi
+    
     if [[ -n $(find /bin /usr/bin -name "systemctl") ]] && [[ -n $(find /etc/systemd/system/ -name "xray.service") ]]; then
-        if [[ -z $(pgrep -f "xray/xray") ]] && [[ "$1" == "start" ]]; then
+        if [[ "$xrayRunning" == "false" ]] && [[ "$1" == "start" ]]; then
             systemctl start xray.service
-        elif [[ -n $(pgrep -f "xray/xray") ]] && [[ "$1" == "stop" ]]; then
+        elif [[ "$xrayRunning" == "true" ]] && [[ "$1" == "stop" ]]; then
             systemctl stop xray.service
+        elif [[ "$xrayRunning" == "true" ]] && [[ "$1" == "start" ]]; then
+            echoContent yellow " ---> Xray已经在运行中，跳过启动"
+            return 0
         fi
     elif [[ -f "/etc/init.d/xray" ]]; then
-        if [[ -z $(pgrep -f "xray/xray") ]] && [[ "$1" == "start" ]]; then
+        if [[ "$xrayRunning" == "false" ]] && [[ "$1" == "start" ]]; then
             # Alpine Linux特殊处理
             if [[ "${release}" == "alpine" ]]; then
                 # 确保/var/run目录正确
@@ -3331,8 +3373,11 @@ handleXray() {
             else
                 rc-service xray start
             fi
-        elif [[ -n $(pgrep -f "xray/xray") ]] && [[ "$1" == "stop" ]]; then
+        elif [[ "$xrayRunning" == "true" ]] && [[ "$1" == "stop" ]]; then
             rc-service xray stop
+        elif [[ "$xrayRunning" == "true" ]] && [[ "$1" == "start" ]]; then
+            echoContent yellow " ---> Xray已经在运行中，跳过启动"
+            return 0
         fi
     fi
 
@@ -4453,67 +4498,6 @@ singBoxMergeConfig() {
     /etc/v2ray-agent/sing-box/sing-box merge config.json -C /etc/v2ray-agent/sing-box/conf/config/ -D /etc/v2ray-agent/sing-box/conf/ >/dev/null 2>&1
 }
 
-# 初始化Xray Trojan XTLS 配置文件
-#initXrayFrontingConfig() {
-#    echoContent red " ---> Trojan暂不支持 xtls-rprx-vision"
-#    if [[ -z "${configPath}" ]]; then
-#        echoContent red " ---> 未安装，请使用脚本安装"
-#        menu
-#        exit 0
-#    fi
-#    if [[ "${coreInstallType}" != "1" ]]; then
-#        echoContent red " ---> 未安装可用类型"
-#    fi
-#    local xtlsType=
-#    if echo ${currentInstallProtocolType} | grep -q trojan; then
-#        xtlsType=VLESS
-#    else
-#        xtlsType=Trojan
-#    fi
-#
-#    echoContent skyBlue "\n功能 1/${totalProgress} : 前置切换为${xtlsType}"
-#    echoContent red "\n=============================================================="
-#    echoContent yellow "# 注意事项\n"
-#    echoContent yellow "会将前置替换为${xtlsType}"
-#    echoContent yellow "如果前置是Trojan，查看账号时则会出现两个Trojan协议的节点，有一个不可用xtls"
-#    echoContent yellow "再次执行可切换至上一次的前置\n"
-#
-#    echoContent yellow "1.切换至${xtlsType}"
-#    echoContent red "=============================================================="
-#    read -r -p "请选择:" selectType
-#    if [[ "${selectType}" == "1" ]]; then
-#
-#        if [[ "${xtlsType}" == "Trojan" ]]; then
-#
-#            local VLESSConfig
-#            VLESSConfig=$(cat ${configPath}${frontingType}.json)
-#            VLESSConfig=${VLESSConfig//"id"/"password"}
-#            VLESSConfig=${VLESSConfig//VLESSTCP/TrojanTCPXTLS}
-#            VLESSConfig=${VLESSConfig//VLESS/Trojan}
-#            VLESSConfig=${VLESSConfig//"vless"/"trojan"}
-#            VLESSConfig=${VLESSConfig//"id"/"password"}
-#
-#            echo "${VLESSConfig}" | jq . >${configPath}02_trojan_TCP_inbounds.json
-#            rm ${configPath}${frontingType}.json
-#        elif [[ "${xtlsType}" == "VLESS" ]]; then
-#
-#            local VLESSConfig
-#            VLESSConfig=$(cat ${configPath}02_trojan_TCP_inbounds.json)
-#            VLESSConfig=${VLESSConfig//"password"/"id"}
-#            VLESSConfig=${VLESSConfig//TrojanTCPXTLS/VLESSTCP}
-#            VLESSConfig=${VLESSConfig//Trojan/VLESS}
-#            VLESSConfig=${VLESSConfig//"trojan"/"vless"}
-#            VLESSConfig=${VLESSConfig//"password"/"id"}
-#
-#            echo "${VLESSConfig}" | jq . >${configPath}02_VLESS_TCP_inbounds.json
-#            rm ${configPath}02_trojan_TCP_inbounds.json
-#        fi
-#        reloadCore
-#    fi
-#
-#    exit 0
-#}
-
 # 初始化sing-box端口
 initSingBoxPort() {
     local port=$1
@@ -4766,40 +4750,6 @@ EOF
     elif [[ -z "$3" ]]; then
         rm /etc/v2ray-agent/xray/conf/12_VLESS_XHTTP_inbounds.json >/dev/null 2>&1
     fi
-    # trojan_grpc
-    #    if echo "${selectCustomInstallType}" | grep -q ",2," || [[ "$1" == "all" ]]; then
-    #        if ! echo "${selectCustomInstallType}" | grep -q ",5," && [[ -n ${selectCustomInstallType} ]]; then
-    #            fallbacksList=${fallbacksList//31302/31304}
-    #        fi
-    #        cat <<EOF >/etc/v2ray-agent/xray/conf/04_trojan_gRPC_inbounds.json
-    #{
-    #    "inbounds": [
-    #        {
-    #            "port": 31304,
-    #            "listen": "127.0.0.1",
-    #            "protocol": "trojan",
-    #            "tag": "trojangRPCTCP",
-    #            "settings": {
-    #                "clients": $(initXrayClients 2),
-    #                "fallbacks": [
-    #                    {
-    #                        "dest": "31300"
-    #                    }
-    #                ]
-    #            },
-    #            "streamSettings": {
-    #                "network": "grpc",
-    #                "grpcSettings": {
-    #                    "serviceName": "${customPath}trojangrpc"
-    #                }
-    #            }
-    #        }
-    #    ]
-    #}
-    #EOF
-    #    elif [[ -z "$3" ]]; then
-    #        rm /etc/v2ray-agent/xray/conf/04_trojan_gRPC_inbounds.json >/dev/null 2>&1
-    #    fi
 
     # VMess_WS
     if echo "${selectCustomInstallType}" | grep -q ",3," || [[ "$1" == "all" ]]; then
@@ -5646,6 +5596,10 @@ EOF
 trojan://${id}@${currentHost}:${port}?peer=${currentHost}&fp=chrome&sni=${currentHost}&alpn=http/1.1#${email}_Trojan
 EOF
 
+        cat <<EOF >>"/etc/v2ray-agent/subscribe_local/default/${user}"
+trojan://${id}@${currentHost}:${port}?peer=${currentHost}&fp=chrome&sni=${currentHost}&alpn=http/1.1#${email}_Trojan
+EOF
+
         cat <<EOF >>"/etc/v2ray-agent/subscribe_local/clashMeta/${user}"
   - name: "${email}"
     type: trojan
@@ -5656,11 +5610,12 @@ EOF
     udp: true
     sni: ${currentHost}
 EOF
+
         singBoxSubscribeLocalConfig=$(jq -r ". += [{\"tag\":\"${email}\",\"type\":\"trojan\",\"server\":\"${currentHost}\",\"server_port\":${port},\"password\":\"${id}\",\"tls\":{\"alpn\":[\"http/1.1\"],\"enabled\":true,\"server_name\":\"${currentHost}\",\"utls\":{\"enabled\":true,\"fingerprint\":\"chrome\"}}}]" "/etc/v2ray-agent/subscribe_local/sing-box/${user}")
         echo "${singBoxSubscribeLocalConfig}" | jq . >"/etc/v2ray-agent/subscribe_local/sing-box/${user}"
 
         echoContent yellow " ---> 二维码 Trojan(TLS)"
-        echoContent green "    https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=trojan%3a%2f%2f${id}%40${currentHost}%3a${port}%3fpeer%3d${currentHost}%26fp%3Dchrome%26sni%3d${currentHost}%26alpn%3Dhttp/1.1%23${email}\n"
+        echoContent green "    https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=trojan%3a%2f%2f${id}%40${currentHost}%3a${port}%3fpeer%3d${currentHost}%26fp%3Dchrome%26sni%3d${currentHost}%26alpn%3dhttp/1.1%23${email}\n"
 
     elif [[ "${type}" == "trojangrpc" ]]; then
         # URLEncode
@@ -10668,9 +10623,6 @@ menu() {
     2)
         selectCoreInstall
         ;;
-        #    3)
-        #        initXrayFrontingConfig 1
-        #        ;;
     4)
         manageHysteria
         ;;
