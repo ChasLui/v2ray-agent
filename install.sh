@@ -3137,6 +3137,8 @@ enableBootAutostart() {
         echoContent green " ---> 检测到 Xray"
         if [[ "${release}" == "alpine" ]]; then
             installAlpineStartup "xray"
+            rc-service xray zap >/dev/null 2>&1 || true
+            rc-service xray stop >/dev/null 2>&1 || true
             pkill -f "xray/xray" >/dev/null 2>&1
             rm -f /run/xray.pid
             rc-service xray start 2>/etc/v2ray-agent/xray_error.log
@@ -3164,6 +3166,8 @@ enableBootAutostart() {
         echoContent green " ---> 检测到 sing-box"
         if [[ "${release}" == "alpine" ]]; then
             installAlpineStartup "sing-box"
+            rc-service sing-box zap >/dev/null 2>&1 || true
+            rc-service sing-box stop >/dev/null 2>&1 || true
             pkill -f "sing-box/sing-box" >/dev/null 2>&1
             rm -f /run/sing-box.pid
             rc-service sing-box start 2>/etc/v2ray-agent/singbox_error.log
@@ -3349,16 +3353,12 @@ handleSingBox() {
                 
                 # 重新加载OpenRC配置
                 rc-update show >/dev/null 2>&1
-                
-                # 尝试启动服务
+                # 确保没有残留进程
+                rc-service sing-box stop >/dev/null 2>&1 || true
+                pkill -f "sing-box/sing-box" >/dev/null 2>&1 || true
+                rm -f /run/sing-box.pid
+                # 通过OpenRC启动
                 rc-service sing-box start 2>/etc/v2ray-agent/singbox_error.log
-                
-                # 如果启动失败，尝试手动启动
-                if [[ $? -ne 0 ]]; then
-                    echoContent yellow " ---> OpenRC启动失败，尝试手动启动..."
-                    /etc/v2ray-agent/sing-box/sing-box run -c /etc/v2ray-agent/sing-box/conf/config.json &
-                    sleep 2
-                fi
             else
                 rc-service sing-box start
             fi
@@ -3428,16 +3428,12 @@ handleXray() {
                 
                 # 重新加载OpenRC配置
                 rc-update show >/dev/null 2>&1
-                
-                # 尝试启动服务
+                # 确保没有残留进程
+                rc-service xray stop >/dev/null 2>&1 || true
+                pkill -f "xray/xray" >/dev/null 2>&1 || true
+                rm -f /run/xray.pid
+                # 通过OpenRC启动
                 rc-service xray start 2>/etc/v2ray-agent/xray_error.log
-                
-                # 如果启动失败，尝试手动启动
-                if [[ $? -ne 0 ]]; then
-                    echoContent yellow " ---> OpenRC启动失败，尝试手动启动..."
-                    /etc/v2ray-agent/xray/xray run -confdir /etc/v2ray-agent/xray/conf &
-                    sleep 2
-                fi
             else
                 rc-service xray start
             fi
