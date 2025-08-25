@@ -3100,15 +3100,11 @@ EOF
 
     chmod +x "/etc/init.d/${serviceName}"
     
-    # Alpine 3.20+的额外配置
-    if [[ -n "${alpineVersion}" ]] && [[ "${alpineVersion}" == "3.20" ]] || [[ "${alpineVersion}" > "3.20" ]]; then
-        # 确保服务在正确的运行级别
+    # OpenRC自启动（所有Alpine版本）
+    if [[ "${release}" == "alpine" ]]; then
         rc-update add "${serviceName}" default >/dev/null 2>&1
-        
-        # 重新加载OpenRC配置
         rc-update show >/dev/null 2>&1
-        
-        echoContent green " ---> Alpine ${alpineVersion} ${serviceName} 服务配置完成"
+        echoContent green " ---> ${serviceName} 已配置为开机自启 (OpenRC)"
     fi
 }
 
