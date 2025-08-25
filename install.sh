@@ -3020,56 +3020,80 @@ installAlpineStartup() {
         cat <<EOF >"/etc/init.d/${serviceName}"
 #!/sbin/openrc-run
 
+name="sing-box"
 description="sing-box service"
 command="/etc/v2ray-agent/sing-box/sing-box"
 command_args="run -c /etc/v2ray-agent/sing-box/conf/config.json"
-command_background=true
-pidfile="/var/run/sing-box.pid"
-command_user="root"
+command_user="root:root"
+
+supervisor="supervise-daemon"
+respawn_delay=5
+respawn_max=0
+
+pidfile="/run/${RC_SVCNAME}.pid"
+output_log="/var/log/sing-box.log"
+error_log="/var/log/sing-box.err"
 
 depend() {
     need net
+    use dns logger
     after firewall
 }
 
 start_pre() {
     # 修复Alpine 3.20+的checkpath问题
     if [[ -n "${alpineVersion}" ]] && [[ "${alpineVersion}" == "3.20" ]] || [[ "${alpineVersion}" > "3.20" ]]; then
-        # 直接创建目录而不使用checkpath
-        mkdir -p /var/run
-        chmod 755 /var/run
-        chown root:root /var/run
+        mkdir -p /run
+        chmod 755 /run
+        chown root:root /run
     else
-        checkpath --directory --owner root:root --mode 0755 /var/run
+        checkpath --directory --owner root:root --mode 0755 /run
     fi
+    # 确保日志文件存在
+    mkdir -p /var/log
+    : > "${output_log}"
+    : > "${error_log}"
+    chmod 0644 "${output_log}" "${error_log}"
 }
 EOF
     elif [[ "${serviceName}" == "xray" ]]; then
         cat <<EOF >"/etc/init.d/${serviceName}"
 #!/sbin/openrc-run
 
+name="xray"
 description="xray service"
 command="/etc/v2ray-agent/xray/xray"
 command_args="run -confdir /etc/v2ray-agent/xray/conf"
-command_background=true
-pidfile="/var/run/xray.pid"
-command_user="root"
+command_user="root:root"
+
+supervisor="supervise-daemon"
+respawn_delay=5
+respawn_max=0
+
+pidfile="/run/${RC_SVCNAME}.pid"
+output_log="/var/log/xray.log"
+error_log="/var/log/xray.err"
 
 depend() {
     need net
+    use dns logger
     after firewall
 }
 
 start_pre() {
     # 修复Alpine 3.20+的checkpath问题
     if [[ -n "${alpineVersion}" ]] && [[ "${alpineVersion}" == "3.20" ]] || [[ "${alpineVersion}" > "3.20" ]]; then
-        # 直接创建目录而不使用checkpath
-        mkdir -p /var/run
-        chmod 755 /var/run
-        chown root:root /var/run
+        mkdir -p /run
+        chmod 755 /run
+        chown root:root /run
     else
-        checkpath --directory --owner root:root --mode 0755 /var/run
+        checkpath --directory --owner root:root --mode 0755 /run
     fi
+    # 确保日志文件存在
+    mkdir -p /var/log
+    : > "${output_log}"
+    : > "${error_log}"
+    chmod 0644 "${output_log}" "${error_log}"
 }
 EOF
     fi
