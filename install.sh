@@ -3137,7 +3137,9 @@ enableBootAutostart() {
         echoContent green " ---> 检测到 Xray"
         if [[ "${release}" == "alpine" ]]; then
             installAlpineStartup "xray"
-            rc-service xray restart 2>/etc/v2ray-agent/xray_error.log || rc-service xray start 2>>/etc/v2ray-agent/xray_error.log
+            pkill -f "xray/xray" >/dev/null 2>&1
+            rm -f /run/xray.pid
+            rc-service xray start 2>/etc/v2ray-agent/xray_error.log
             sleep 1
             if rc-service xray status | grep -q "stopped"; then
                 echoContent red " ---> Xray(OpenRC)服务启动失败"
@@ -3162,7 +3164,9 @@ enableBootAutostart() {
         echoContent green " ---> 检测到 sing-box"
         if [[ "${release}" == "alpine" ]]; then
             installAlpineStartup "sing-box"
-            rc-service sing-box restart 2>/etc/v2ray-agent/singbox_error.log || rc-service sing-box start 2>>/etc/v2ray-agent/singbox_error.log
+            pkill -f "sing-box/sing-box" >/dev/null 2>&1
+            rm -f /run/sing-box.pid
+            rc-service sing-box start 2>/etc/v2ray-agent/singbox_error.log
             sleep 1
             if rc-service sing-box status | grep -q "stopped"; then
                 echoContent red " ---> sing-box(OpenRC)服务启动失败"
