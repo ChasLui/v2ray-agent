@@ -3146,6 +3146,48 @@ EOF
     echoContent green " ---> 配置sing-box开机启动完毕"
 }
 
+enableBootAutostart() {
+    echoContent skyBlue "\n进度 1/1 : 设置开机自启动与进程守护"
+    local anyInstalled=false
+
+    if [[ -f "/etc/v2ray-agent/xray/xray" ]]; then
+        anyInstalled=true
+        echoContent green " ---> 检测到 Xray"
+        if [[ "${release}" == "alpine" ]]; then
+            installAlpineStartup "xray"
+            rc-service xray restart >/dev/null 2>&1 || rc-service xray start >/dev/null 2>&1
+            rc-service xray status
+        else
+            installXrayService 1
+            systemctl enable xray >/dev/null 2>&1
+            systemctl restart xray >/dev/null 2>&1 || systemctl start xray >/dev/null 2>&1
+            systemctl status xray | cat
+        fi
+    fi
+
+    if [[ -f "/etc/v2ray-agent/sing-box/sing-box" ]]; then
+        anyInstalled=true
+        echoContent green " ---> 检测到 sing-box"
+        if [[ "${release}" == "alpine" ]]; then
+            installAlpineStartup "sing-box"
+            rc-service sing-box restart >/dev/null 2>&1 || rc-service sing-box start >/dev/null 2>&1
+            rc-service sing-box status
+        else
+            installSingBoxService 1
+            systemctl enable sing-box >/dev/null 2>&1
+            systemctl restart sing-box >/dev/null 2>&1 || systemctl start sing-box >/dev/null 2>&1
+            systemctl status sing-box | cat
+        fi
+    fi
+
+    if [[ "${anyInstalled}" == false ]]; then
+        echoContent red " ---> 未检测到已安装的核心（xray/sing-box）"
+        echoContent yellow " ---> 请先执行 1.安装 或 2.任意组合安装"
+    else
+        echoContent green " ---> 已配置开机自启动与进程守护"
+    fi
+}
+
 # Xray开机自启
 installXrayService() {
     echoContent skyBlue "\n进度  $1/${totalProgress} : 配置Xray开机自启"
@@ -10630,6 +10672,7 @@ menu() {
     echoContent yellow "16.core管理"
     echoContent yellow "17.更新脚本"
     echoContent yellow "18.安装BBR、DD脚本"
+    echoContent yellow "19.设置开机自启动与进程守护"
     echoContent skyBlue "-------------------------脚本管理-----------------------------"
     echoContent yellow "20.卸载脚本"
     echoContent red "=============================================================="
@@ -10687,6 +10730,9 @@ menu() {
         ;;
     18)
         bbrInstall
+        ;;
+    19)
+        enableBootAutostart
         ;;
     20)
         unInstall 1
