@@ -3140,11 +3140,15 @@ enableBootAutostart() {
             rc-service xray restart 2>/etc/v2ray-agent/xray_error.log || rc-service xray start 2>>/etc/v2ray-agent/xray_error.log
             sleep 1
             if rc-service xray status | grep -q "stopped"; then
-                echoContent yellow " ---> OpenRC启动失败，尝试手动启动..."
-                nohup /etc/v2ray-agent/xray/xray run -confdir /etc/v2ray-agent/xray/conf >> /var/log/xray.log 2>> /var/log/xray.err &
-                sleep 2
+                echoContent red " ---> Xray(OpenRC)服务启动失败"
+                echoContent yellow " ---> 错误日志 (/etc/v2ray-agent/xray_error.log):"
+                tail -n 5 /etc/v2ray-agent/xray_error.log
+                echoContent yellow " ---> Xray日志 (/var/log/xray.err):"
+                tail -n 10 /var/log/xray.err
+            else
+                echoContent green " ---> Xray(OpenRC)服务启动成功"
+                rc-service xray status
             fi
-            rc-service xray status || true
         else
             installXrayService 1
             systemctl enable xray >/dev/null 2>&1
@@ -3161,11 +3165,15 @@ enableBootAutostart() {
             rc-service sing-box restart 2>/etc/v2ray-agent/singbox_error.log || rc-service sing-box start 2>>/etc/v2ray-agent/singbox_error.log
             sleep 1
             if rc-service sing-box status | grep -q "stopped"; then
-                echoContent yellow " ---> OpenRC启动失败，尝试手动启动..."
-                nohup /etc/v2ray-agent/sing-box/sing-box run -c /etc/v2ray-agent/sing-box/conf/config.json >> /var/log/sing-box.log 2>> /var/log/sing-box.err &
-                sleep 2
+                echoContent red " ---> sing-box(OpenRC)服务启动失败"
+                echoContent yellow " ---> 错误日志 (/etc/v2ray-agent/singbox_error.log):"
+                tail -n 5 /etc/v2ray-agent/singbox_error.log
+                echoContent yellow " ---> sing-box日志 (/var/log/sing-box.err):"
+                tail -n 10 /var/log/sing-box.err
+            else
+                echoContent green " ---> sing-box(OpenRC)服务启动成功"
+                rc-service sing-box status
             fi
-            rc-service sing-box status || true
         else
             installSingBoxService 1
             systemctl enable sing-box >/dev/null 2>&1
